@@ -1,0 +1,47 @@
+# ===== GITHUB PUBLISH ADDED BEGIN 排除生成文件与本地运行数据 =====
+# Build directories
+build/
+build-*/
+cmake-build-*/
+out/
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+CTestTestfile.cmake
+cmake_install.cmake
+compile_commands.json
+Testing/
+Makefile
+
+# Compiler output
+*.o
+*.obj
+*.exe
+*.dll
+*.so
+*.a
+*.lib
+*.pdb
+
+# Runtime data
+data/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# IDE files
+.vscode/
+.idea/
+.vs/
+
+# Operating system files
+.DS_Store
+Thumbs.db
+# ===== GITHUB PUBLISH ADDED END =====

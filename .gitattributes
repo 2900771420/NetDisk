@@ -1,0 +1,12 @@
+# ===== GITHUB PUBLISH ADDED BEGIN 统一跨平台文本换行 =====
+* text=auto
+
+*.cpp text eol=lf
+*.h text eol=lf
+*.py text eol=lf
+*.md text eol=lf
+*.cmake text eol=lf
+CMakeLists.txt text eol=lf
+.gitignore text eol=lf
+.gitattributes text eol=lf
+# ===== GITHUB PUBLISH ADDED END =====
