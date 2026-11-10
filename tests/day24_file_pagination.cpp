@@ -1,4 +1,3 @@
-// ===== DAY 24 ADDED BEGIN 验证键集分页稳定顺序与参数边界 =====
 #include "file_catalog.h"
 #include "metadata_database.h"
 
@@ -59,8 +58,10 @@ void add_file(FileMetadataStore& store, const std::string& id, std::int64_t crea
     file.put(id.back());
     require(file.good(), "write object fixture");
     file.close();
-    require(store.create_ready(id, id + ".bin", 1, created_at) == MetadataResult::Ok,
-            "insert metadata fixture");
+    require(store.create_publishing(id, id + ".bin", 1, created_at) ==
+                MetadataResult::Ok &&
+            store.mark_ready(id) == MetadataResult::Ok,
+            "publish metadata fixture");
 }
 
 int main()
@@ -90,10 +91,13 @@ int main()
                 "first page order");
         require(first.at("next_cursor") == "100.upload-B00001", "first cursor");
 
-        require(std::filesystem::remove(
+        // ===== DAY 27 MODIFIED BEGIN 分页删除夹具遵循deleting状态转换 =====
+        require(store.mark_deleting(expected[0]) == MetadataResult::Ok &&
+                std::filesystem::remove(
                     std::filesystem::path("data/objects") / expected[0]) &&
-                store.erase_ready(expected[0]) == MetadataResult::Ok,
+                store.erase_deleting(expected[0]) == MetadataResult::Ok,
                 "delete item before cursor");
+        // ===== DAY 27 MODIFIED END =====
 
         const auto second = nlohmann::json::parse(request(
             store, "/api/files?cursor=100.upload-B00001&limit=2").body);
@@ -130,4 +134,3 @@ int main()
         return 1;
     }
 }
-// ===== DAY 24 ADDED END =====

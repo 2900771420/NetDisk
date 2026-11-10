@@ -1,6 +1,7 @@
 #pragma once
 
 #include "http_response.h"
+#include "file_metadata_store.h"
 #include "object_path.h"
 #include "socket_io.h"
 #include "unique_fd.h"
@@ -23,8 +24,9 @@ inline bool match_file_content(std::string_view target, std::string_view& id)
     return true;
 }
 
+// ===== DAY 25 MODIFIED BEGIN 下载前要求元数据已经提交为ready =====
 inline bool send_file_content(int client_fd, const RequestParser& request,
-                              std::string_view id)
+                              std::string_view id, FileMetadataStore& metadata_store)
 {
     const auto& method = request.line().method;
     const bool head_only = method == "HEAD";
@@ -46,6 +48,15 @@ inline bool send_file_content(int client_fd, const RequestParser& request,
 
     std::string path;
     if (!make_object_path(id, path)) return send_error(400);
+    FileMetadata metadata;
+    const auto found = metadata_store.find_ready(id, metadata);
+    if (found == MetadataResult::NotFound) return send_error(404);
+    if (found != MetadataResult::Ok)
+    {
+        std::cerr << "download metadata lookup failed: "
+                  << metadata_store.error_message() << '\n';
+        return send_error(500);
+    }
     int raw_fd;
     do
     {
@@ -75,6 +86,11 @@ inline bool send_file_content(int client_fd, const RequestParser& request,
     if (info.st_size < 0) return send_error(500);
 
     std::uint64_t remaining = static_cast<std::uint64_t>(info.st_size);
+    if (remaining != metadata.size)
+    {
+        std::cerr << "download object size differs from ready metadata\n";
+        return send_error(500);
+    }
     std::string header;
     if (!make_download_header(id, remaining, header)) return send_error(500);
     if (!send_all(client_fd, header.data(), header.size())) return false;
@@ -103,3 +119,4 @@ inline bool send_file_content(int client_fd, const RequestParser& request,
     }
     return true;
 }
+// ===== DAY 25 MODIFIED END =====

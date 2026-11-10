@@ -67,16 +67,32 @@ public:
     int error() const noexcept { return error_; }
     const char* path() const noexcept { return created_ ? path_ : ""; }
 
-    bool publish(std::size_t expected)
+    // ===== DAY 25 ADDED BEGIN 在文件发布前冻结长度并取得稳定ID =====
+    bool prepare_publish(std::size_t expected)
     {
         if (error_ != 0) return false;
-        if (!created_ || !id_.empty() || written_ != expected) return fail(EINVAL);
+        if (!created_ || prepared_ || published_ || !id_.empty() || written_ != expected)
+            return fail(EINVAL);
         if (!close_file()) return false;
-        std::string candidate(std::strrchr(path_, '/') + 1);
+        const char* separator = std::strrchr(path_, '/');
+        if (separator == nullptr || separator[1] == '\0') return fail(EINVAL);
+        std::string candidate(separator + 1);
         std::string destination;
         if (!make_object_path(candidate, destination)) return fail(EINVAL);
-        if (::link(path_, destination.c_str()) == -1) return fail(errno);
         id_ = std::move(candidate);
+        prepared_ = true;
+        return true;
+    }
+
+    bool publish_prepared()
+    {
+        if (error_ != 0) return false;
+        if (!created_ || !prepared_ || published_ || id_.empty() || fd_ >= 0)
+            return fail(EINVAL);
+        std::string destination;
+        if (!make_object_path(id_, destination)) return fail(EINVAL);
+        if (::link(path_, destination.c_str()) == -1) return fail(errno);
+        published_ = true;
         if (::unlink(path_) == 0)
             created_ = false;
         else
@@ -84,15 +100,24 @@ public:
         return true;
     }
 
+    bool publish(std::size_t expected)
+    {
+        return prepare_publish(expected) && publish_prepared();
+    }
+    // ===== DAY 25 ADDED END =====
+
+    // ===== DAY 25 MODIFIED BEGIN 只允许删除已经链接的正式对象 =====
     bool discard_published()
     {
-        if (id_.empty()) return fail(EINVAL);
+        if (id_.empty() || !published_) return fail(EINVAL);
         std::string destination;
         if (!make_object_path(id_, destination)) return fail(EINVAL);
         if (::unlink(destination.c_str()) == -1) return fail(errno);
+        published_ = false;
         id_.clear();
         return true;
     }
+    // ===== DAY 25 MODIFIED END =====
 
     const std::string& id() const noexcept { return id_; }
 
@@ -109,4 +134,8 @@ private:
     bool created_ = false;
     std::size_t written_ = 0;
     std::string id_;
+    // ===== DAY 25 ADDED BEGIN 区分已准备与已链接状态 =====
+    bool prepared_ = false;
+    bool published_ = false;
+    // ===== DAY 25 ADDED END =====
 };

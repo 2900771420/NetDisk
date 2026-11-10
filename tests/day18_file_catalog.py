@@ -35,12 +35,10 @@ def run_checks(root):
         status, _, body = exchange("GET", f"/api/files/{file_id}/content")
         require(status == 200 and body == payload, "download route regressed")
     expected.sort(key=lambda item: item["id"])
-    # ===== DAY 24 MODIFIED BEGIN 旧测试只核对集合 新测试单独验证分页顺序 =====
     status, _, actual = document("GET", "/api/files")
     require(status == 200 and
             sorted(actual["files"], key=lambda item: item["id"]) == expected,
             "list schema or values")
-    # ===== DAY 24 MODIFIED END =====
     print("PASS: uploads, sorted list, details and downloads agree")
 
     objects = root / "data" / "objects"

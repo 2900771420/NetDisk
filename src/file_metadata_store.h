@@ -2,9 +2,7 @@
 
 #include <sqlite3.h>
 
-// ===== DAY 24 ADDED BEGIN 支持分页数量类型 =====
 #include <cstddef>
-// ===== DAY 24 ADDED END =====
 #include <cstdint>
 #include <limits>
 #include <string>
@@ -20,7 +18,6 @@ struct FileMetadata
     std::int64_t created_at = 0;
 };
 
-// ===== DAY 24 ADDED BEGIN 定义键集分页输入 =====
 struct FilePageRequest
 {
     std::size_t limit = 100;
@@ -28,7 +25,6 @@ struct FilePageRequest
     std::int64_t cursor_created_at = 0;
     std::string cursor_id;
 };
-// ===== DAY 24 ADDED END =====
 
 enum class MetadataResult
 {
@@ -52,10 +48,17 @@ public:
     ~FileMetadataStore() noexcept
     {
         sqlite3_finalize(create_);
+        sqlite3_finalize(ready_);
+        sqlite3_finalize(cancel_);
+        sqlite3_finalize(list_publishing_);
+        // ===== DAY 27 ADDED BEGIN 释放删除状态机与恢复查询语句 =====
+        sqlite3_finalize(mark_deleting_);
+        sqlite3_finalize(erase_deleting_);
+        sqlite3_finalize(list_deleting_);
+        // ===== DAY 27 ADDED END =====
         sqlite3_finalize(list_);
         sqlite3_finalize(find_);
         sqlite3_finalize(rename_);
-        sqlite3_finalize(erase_);
     }
 
     bool prepare()
@@ -75,23 +78,44 @@ public:
 
         if (!prepare_statement(create_,
                 "INSERT INTO files(id, name, size, state, created_at) "
-                "VALUES(?1, ?2, ?3, 'ready', ?4);", "prepare create file") ||
-            // ===== DAY 24 MODIFIED BEGIN 按创建时间与ID执行键集分页 =====
+                "VALUES(?1, ?2, ?3, 'publishing', ?4);",
+                "prepare create publishing file") ||
+            !prepare_statement(ready_,
+                "UPDATE files SET state = 'ready' "
+                "WHERE id = ?1 AND state = 'publishing';",
+                "prepare mark file ready") ||
+            !prepare_statement(cancel_,
+                "DELETE FROM files WHERE id = ?1 AND state = 'publishing';",
+                "prepare cancel publishing file") ||
+            !prepare_statement(list_publishing_,
+                "SELECT id, name, size, created_at FROM files "
+                "WHERE state = 'publishing' ORDER BY created_at, id;",
+                "prepare list publishing files") ||
+            // ===== DAY 27 DELETED 删除直接擦除ready记录的预编译语句 改用deleting状态机 =====
+            // ===== DAY 27 ADDED BEGIN 准备删除状态转换与启动恢复查询 =====
+            !prepare_statement(mark_deleting_,
+                "UPDATE files SET state = 'deleting' "
+                "WHERE id = ?1 AND state = 'ready';",
+                "prepare mark file deleting") ||
+            !prepare_statement(erase_deleting_,
+                "DELETE FROM files WHERE id = ?1 AND state = 'deleting';",
+                "prepare erase deleting file") ||
+            !prepare_statement(list_deleting_,
+                "SELECT id, name, size, created_at FROM files "
+                "WHERE state = 'deleting' ORDER BY created_at, id;",
+                "prepare list deleting files") ||
+            // ===== DAY 27 ADDED END =====
             !prepare_statement(list_,
                 "SELECT id, name, size, created_at FROM files "
                 "WHERE state = 'ready' AND "
                 "(?1 = 0 OR created_at > ?2 OR (created_at = ?2 AND id > ?3)) "
                 "ORDER BY created_at, id LIMIT ?4;", "prepare list files") ||
-            // ===== DAY 24 MODIFIED END =====
             !prepare_statement(find_,
                 "SELECT id, name, size, created_at FROM files "
                 "WHERE id = ?1 AND state = 'ready';", "prepare find file") ||
             !prepare_statement(rename_,
                 "UPDATE files SET name = ?1 WHERE id = ?2 AND state = 'ready';",
-                "prepare rename file") ||
-            !prepare_statement(erase_,
-                "DELETE FROM files WHERE id = ?1 AND state = 'ready';",
-                "prepare erase file"))
+                "prepare rename file"))
             return false;
 
         prepared_ = true;
@@ -99,38 +123,148 @@ public:
         return true;
     }
 
-    MetadataResult create_ready(std::string_view id, std::string_view name,
-                                std::uint64_t size, std::int64_t created_at)
+    MetadataResult create_publishing(std::string_view id, std::string_view name,
+                                     std::uint64_t size, std::int64_t created_at)
     {
-        if (!start_statement(create_, "create file metadata"))
+        if (!start_statement(create_, "create publishing metadata"))
             return MetadataResult::Error;
-        StatementReset reset(create_);
         if (size > static_cast<std::uint64_t>(std::numeric_limits<sqlite3_int64>::max()) ||
             created_at < 0)
         {
-            remember_error("create file metadata", SQLITE_TOOBIG,
+            remember_error("create publishing metadata", SQLITE_TOOBIG,
                            "size or creation time is outside SQLite INTEGER range");
             return MetadataResult::Error;
         }
-        if (!bind_text(create_, 1, id, "bind file id") ||
-            !bind_text(create_, 2, name, "bind file name") ||
-            !bind_integer(create_, 3, static_cast<sqlite3_int64>(size), "bind file size") ||
-            !bind_integer(create_, 4, static_cast<sqlite3_int64>(created_at),
-                          "bind file creation time"))
+        if (!begin_transaction("begin publishing metadata transaction"))
             return MetadataResult::Error;
 
-        const int result = sqlite3_step(create_);
-        if (result == SQLITE_DONE)
+        bool bound = false;
+        int result = SQLITE_ERROR;
         {
-            clear_error();
-            return MetadataResult::Ok;
+            StatementReset reset(create_);
+            bound = bind_text(create_, 1, id, "bind publishing file id") &&
+                bind_text(create_, 2, name, "bind publishing file name") &&
+                bind_integer(create_, 3, static_cast<sqlite3_int64>(size),
+                             "bind publishing file size") &&
+                bind_integer(create_, 4, static_cast<sqlite3_int64>(created_at),
+                             "bind publishing creation time");
+            if (bound) result = sqlite3_step(create_);
         }
-        remember_error("create file metadata", result, sqlite3_errmsg(database_));
-        return primary_code(result) == SQLITE_CONSTRAINT
-            ? MetadataResult::Conflict : MetadataResult::Error;
+        if (!bound)
+        {
+            rollback_transaction();
+            return MetadataResult::Error;
+        }
+        if (result != SQLITE_DONE)
+        {
+            remember_error("create publishing metadata", result, sqlite3_errmsg(database_));
+            rollback_transaction();
+            return primary_code(result) == SQLITE_CONSTRAINT
+                ? MetadataResult::Conflict : MetadataResult::Error;
+        }
+        if (!commit_transaction("commit publishing metadata transaction"))
+        {
+            rollback_transaction();
+            return MetadataResult::Error;
+        }
+        clear_error();
+        return MetadataResult::Ok;
     }
 
-    // ===== DAY 24 MODIFIED BEGIN 读取limit加一行判断是否存在下一页 =====
+    // ===== DAY 27 MODIFIED BEGIN 发布状态转换改用通用事务模板 =====
+    MetadataResult mark_ready(std::string_view id)
+    {
+        return change_state(ready_, id, "mark file ready",
+                            "begin publishing state transaction",
+                            "commit ready metadata transaction");
+    }
+
+    MetadataResult cancel_publishing(std::string_view id)
+    {
+        return change_state(cancel_, id, "cancel publishing file",
+                            "begin publishing state transaction",
+                            "commit cancel metadata transaction");
+    }
+    // ===== DAY 27 MODIFIED END =====
+
+    MetadataResult list_publishing(std::vector<FileMetadata>& output)
+    {
+        output.clear();
+        if (!start_statement(list_publishing_, "list publishing metadata"))
+            return MetadataResult::Error;
+        StatementReset reset(list_publishing_);
+        while (true)
+        {
+            const int result = sqlite3_step(list_publishing_);
+            if (result == SQLITE_DONE)
+            {
+                clear_error();
+                return MetadataResult::Ok;
+            }
+            if (result != SQLITE_ROW)
+            {
+                remember_error("list publishing metadata", result,
+                               sqlite3_errmsg(database_));
+                output.clear();
+                return MetadataResult::Error;
+            }
+            FileMetadata file;
+            if (!read_row(list_publishing_, file, "read publishing metadata"))
+            {
+                output.clear();
+                return MetadataResult::Error;
+            }
+            output.push_back(std::move(file));
+        }
+    }
+
+    // ===== DAY 27 ADDED BEGIN 提交删除意图并只读取deleting记录供恢复 =====
+    MetadataResult mark_deleting(std::string_view id)
+    {
+        return change_state(mark_deleting_, id, "mark file deleting",
+                            "begin deleting state transaction",
+                            "commit deleting state transaction");
+    }
+
+    MetadataResult erase_deleting(std::string_view id)
+    {
+        return change_state(erase_deleting_, id, "erase deleting file",
+                            "begin erase deleting transaction",
+                            "commit erase deleting transaction");
+    }
+
+    MetadataResult list_deleting(std::vector<FileMetadata>& output)
+    {
+        output.clear();
+        if (!start_statement(list_deleting_, "list deleting metadata"))
+            return MetadataResult::Error;
+        StatementReset reset(list_deleting_);
+        while (true)
+        {
+            const int result = sqlite3_step(list_deleting_);
+            if (result == SQLITE_DONE)
+            {
+                clear_error();
+                return MetadataResult::Ok;
+            }
+            if (result != SQLITE_ROW)
+            {
+                remember_error("list deleting metadata", result,
+                               sqlite3_errmsg(database_));
+                output.clear();
+                return MetadataResult::Error;
+            }
+            FileMetadata file;
+            if (!read_row(list_deleting_, file, "read deleting metadata"))
+            {
+                output.clear();
+                return MetadataResult::Error;
+            }
+            output.push_back(std::move(file));
+        }
+    }
+    // ===== DAY 27 ADDED END =====
+
     MetadataResult list_ready(const FilePageRequest& page,
                               std::vector<FileMetadata>& output, bool& has_more)
     {
@@ -180,7 +314,6 @@ public:
             output.push_back(std::move(file));
         }
     }
-    // ===== DAY 24 MODIFIED END =====
 
     MetadataResult find_ready(std::string_view id, FileMetadata& output)
     {
@@ -236,24 +369,7 @@ public:
             ? MetadataResult::NotFound : MetadataResult::Ok;
     }
 
-    MetadataResult erase_ready(std::string_view id)
-    {
-        if (!start_statement(erase_, "erase file metadata"))
-            return MetadataResult::Error;
-        StatementReset reset(erase_);
-        if (!bind_text(erase_, 1, id, "bind erased file id"))
-            return MetadataResult::Error;
-
-        const int result = sqlite3_step(erase_);
-        if (result != SQLITE_DONE)
-        {
-            remember_error("erase file metadata", result, sqlite3_errmsg(database_));
-            return MetadataResult::Error;
-        }
-        clear_error();
-        return sqlite3_changes(database_) == 0
-            ? MetadataResult::NotFound : MetadataResult::Ok;
-    }
+    // ===== DAY 27 DELETED 删除erase_ready接口 防止绕过deleting状态直接删除公开元数据 =====
 
     int error_code() const noexcept
     {
@@ -336,6 +452,86 @@ private:
         return false;
     }
 
+    bool execute_command(const char* sql, const char* operation)
+    {
+        char* detail = nullptr;
+        const int result = sqlite3_exec(database_, sql, nullptr, nullptr, &detail);
+        if (result == SQLITE_OK)
+        {
+            sqlite3_free(detail);
+            return true;
+        }
+        remember_error(operation, result,
+                       detail == nullptr ? sqlite3_errmsg(database_) : detail);
+        sqlite3_free(detail);
+        return false;
+    }
+
+    bool begin_transaction(const char* operation)
+    {
+        return execute_command("BEGIN IMMEDIATE;", operation);
+    }
+
+    bool commit_transaction(const char* operation)
+    {
+        return execute_command("COMMIT;", operation);
+    }
+
+    void rollback_transaction() noexcept
+    {
+        sqlite3_exec(database_, "ROLLBACK;", nullptr, nullptr, nullptr);
+    }
+
+    // ===== DAY 27 MODIFIED BEGIN 复用事务模板处理发布和删除状态转换 =====
+    MetadataResult change_state(sqlite3_stmt* statement,
+                                std::string_view id,
+                                const char* operation,
+                                const char* begin_operation,
+                                const char* commit_operation)
+    {
+        if (!start_statement(statement, operation)) return MetadataResult::Error;
+        if (!begin_transaction(begin_operation))
+            return MetadataResult::Error;
+
+        bool bound = false;
+        int result = SQLITE_ERROR;
+        int changed = 0;
+        {
+            StatementReset reset(statement);
+            bound = bind_text(statement, 1, id, "bind state transition file id");
+            if (bound)
+            {
+                result = sqlite3_step(statement);
+                if (result == SQLITE_DONE) changed = sqlite3_changes(database_);
+            }
+        }
+        if (!bound)
+        {
+            rollback_transaction();
+            return MetadataResult::Error;
+        }
+        if (result != SQLITE_DONE)
+        {
+            remember_error(operation, result, sqlite3_errmsg(database_));
+            rollback_transaction();
+            return MetadataResult::Error;
+        }
+        if (changed != 1)
+        {
+            rollback_transaction();
+            clear_error();
+            return MetadataResult::NotFound;
+        }
+        if (!commit_transaction(commit_operation))
+        {
+            rollback_transaction();
+            return MetadataResult::Error;
+        }
+        clear_error();
+        return MetadataResult::Ok;
+    }
+    // ===== DAY 27 MODIFIED END =====
+
     bool read_row(sqlite3_stmt* statement, FileMetadata& output,
                   const char* operation)
     {
@@ -383,10 +579,17 @@ private:
 
     sqlite3* database_ = nullptr;
     sqlite3_stmt* create_ = nullptr;
+    sqlite3_stmt* ready_ = nullptr;
+    sqlite3_stmt* cancel_ = nullptr;
+    sqlite3_stmt* list_publishing_ = nullptr;
+    // ===== DAY 27 ADDED BEGIN 持有删除状态机与恢复查询语句 =====
+    sqlite3_stmt* mark_deleting_ = nullptr;
+    sqlite3_stmt* erase_deleting_ = nullptr;
+    sqlite3_stmt* list_deleting_ = nullptr;
+    // ===== DAY 27 ADDED END =====
     sqlite3_stmt* list_ = nullptr;
     sqlite3_stmt* find_ = nullptr;
     sqlite3_stmt* rename_ = nullptr;
-    sqlite3_stmt* erase_ = nullptr;
     bool prepared_ = false;
     int error_code_ = SQLITE_OK;
     std::string error_message_;

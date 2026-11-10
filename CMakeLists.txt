@@ -167,14 +167,66 @@ if(BUILD_TESTING)
         SKIP_RETURN_CODE 77
     )
 
-    # ===== DAY 24 ADDED BEGIN 注册文件键集分页测试 =====
     add_executable(file_pagination_tests tests/day24_file_pagination.cpp)
     target_include_directories(file_pagination_tests PRIVATE src)
     target_link_libraries(file_pagination_tests PRIVATE
         nlohmann_json::nlohmann_json SQLite::SQLite3)
     list(APPEND NETDISK_TARGETS file_pagination_tests)
     add_test(NAME file_pagination_tests COMMAND file_pagination_tests)
-    # ===== DAY 24 ADDED END =====
+
+    add_executable(publish_state_tests tests/day25_publish_state.cpp)
+    target_include_directories(publish_state_tests PRIVATE src)
+    target_link_libraries(publish_state_tests PRIVATE
+        nlohmann_json::nlohmann_json SQLite::SQLite3)
+    list(APPEND NETDISK_TARGETS publish_state_tests)
+    add_test(NAME publish_state_tests COMMAND publish_state_tests)
+
+    add_test(NAME publish_state_integration_tests
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/day25_publish_state.py"
+            "$<TARGET_FILE:netdisk>"
+    )
+    set_tests_properties(publish_state_integration_tests PROPERTIES
+        TIMEOUT 30
+        RUN_SERIAL TRUE
+        SKIP_RETURN_CODE 77
+    )
+
+    add_executable(publishing_recovery_tests tests/day26_publishing_recovery.cpp)
+    target_include_directories(publishing_recovery_tests PRIVATE src)
+    target_link_libraries(publishing_recovery_tests PRIVATE SQLite::SQLite3)
+    list(APPEND NETDISK_TARGETS publishing_recovery_tests)
+    add_test(NAME publishing_recovery_tests COMMAND publishing_recovery_tests)
+
+    add_test(NAME publishing_recovery_integration_tests
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/day26_publishing_recovery.py"
+            "$<TARGET_FILE:netdisk>"
+    )
+    set_tests_properties(publishing_recovery_integration_tests PROPERTIES
+        TIMEOUT 30
+        RUN_SERIAL TRUE
+        SKIP_RETURN_CODE 77
+    )
+
+    # ===== DAY 27 ADDED BEGIN 注册deleting状态与启动删除恢复测试 =====
+    add_executable(deletion_recovery_tests tests/day27_deletion_recovery.cpp)
+    target_include_directories(deletion_recovery_tests PRIVATE src)
+    target_link_libraries(deletion_recovery_tests PRIVATE SQLite::SQLite3)
+    list(APPEND NETDISK_TARGETS deletion_recovery_tests)
+    add_test(NAME deletion_recovery_tests COMMAND deletion_recovery_tests)
+
+    add_test(NAME deletion_recovery_integration_tests
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/day27_deletion_recovery.py"
+            "$<TARGET_FILE:netdisk>"
+    )
+    set_tests_properties(deletion_recovery_integration_tests PROPERTIES
+        TIMEOUT 30
+        RUN_SERIAL TRUE
+        SKIP_RETURN_CODE 77
+    )
+    # ===== DAY 27 ADDED END =====
 endif()
 
 foreach(target IN LISTS NETDISK_TARGETS)

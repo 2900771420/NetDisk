@@ -1,6 +1,37 @@
 # NetDisk 本地参考工程
 
-当前学习单元 第24单元 limit与cursor键集分页 本地参考已更新 Linux验证待反馈 下一步第25单元发布状态与事务边界
+当前学习单元 第27单元 deleting状态与删除恢复 本地参考已更新 Linux验证待反馈
+
+第27单元DELETE先以SQLite事务把ready切换为deleting 再删除正式对象 最后以第二个事务删除deleting元数据
+列表 详情 下载与重复DELETE只读取ready 因此删除意图提交后新请求立即看到404 中断后服务在监听前继续完成删除
+启动恢复遇到对象缺失时只收尾元数据 遇到匹配普通文件时删除对象再收尾 类型或大小异常时保留证据并拒绝监听 ready对象不会被恢复器删除
+新增deletion_recovery_tests覆盖对象存在 对象缺失 第二次运行幂等 大小异常保留与修复重试 ready对象保护 新集成测试覆盖真实服务多次重启和正常DELETE
+同步src/deletion_recovery.h src/file_metadata_store.h src/file_catalog.h src/main.cpp tests/day24_file_pagination.cpp tests/day27_deletion_recovery.cpp tests/day27_deletion_recovery.py与CMakeLists.txt
+复用build构建后只运行 ctest --test-dir build -R '^deletion_recovery_integration_tests$' -V 应通过一项并输出PASS: deletion recovery integration finished, 3 groups
+本机Windows g++严格编译运行deletion_recovery_tests及分页 目录 改名删除 发布状态 发布恢复 SQLite生命周期六项回归通过 全部14个Python测试脚本语法通过 Linux生产服务启动删除恢复待反馈
+
+以下为第26单元及更早的历史说明 不要求每日重跑
+
+第26单元服务在监听端口前扫描全部publishing记录 根据data uploads临时名和data objects正式名完成幂等归类
+只有临时文件时创建正式硬链接并删除临时名 只有正式对象时直接切换ready 两个名称指向同一文件时清理临时名 两者都缺失时取消记录
+任一现存路径不是普通文件 大小与元数据不符 或两个名称指向不同文件时启动失败并保留publishing证据 不公开也不静默删除
+新增publishing_recovery_tests覆盖完成 取消 重试 冲突保护与第二次运行幂等 新集成测试覆盖真实服务连续三次启动及恢复后下载
+同步src/file_metadata_store.h src/publishing_recovery.h src/main.cpp tests/day26_publishing_recovery.cpp tests/day26_publishing_recovery.py与CMakeLists.txt
+复用build构建后只运行 ctest --test-dir build -R '^publishing_recovery_integration_tests$' -V 应通过一项并输出PASS: publishing recovery integration finished, 2 groups
+本机Windows g++严格编译运行publishing_recovery_tests及发布状态 分页 目录 改名删除 SQLite生命周期五项回归通过 全部13个Python测试脚本语法通过 Linux生产服务启动恢复待反馈
+
+以下为第25单元及更早的历史说明 不要求每日重跑
+
+第25单元上传完整接收后先以显式SQLite事务插入publishing记录 再通过硬链接发布正式对象 最后以第二个事务把状态切换为ready
+列表 详情和下载现在都要求ready 未登记或publishing对象即使已经存在于data/objects也返回404 下载同时核对磁盘大小与元数据大小
+发布文件失败时事务性撤销publishing记录 ready转换失败时保留对象与publishing记录供第26单元恢复 不删除提交结果可能不确定的对象
+新增publish_state_tests覆盖事务提交 冲突回滚 非法状态转换 取消发布和公开可见性 新集成测试覆盖真实列表详情下载及正常上传最终状态
+按活动源码标注规则DAY01至DAY24标注已清理 当前代码只标注DAY25真实变化
+同步src/file_metadata_store.h src/temp_upload.h src/file_download.h src/main.cpp 相关C++和Python回归测试 新增tests/day25_publish_state.cpp tests/day25_publish_state.py并更新CMakeLists.txt
+复用build构建后只运行 ctest --test-dir build -R '^publish_state_integration_tests$' -V 应通过一项并输出PASS: publishing state integration finished, 3 groups
+本机Windows g++严格编译运行publish_state_tests及分页 目录 改名删除 SQLite生命周期四项回归通过 全部12个Python测试脚本语法通过 Linux生产服务与真实发布顺序待反馈 临时检查产物已删除
+
+以下为第24单元及更早的历史说明 不要求每日重跑
 
 第24单元GET HEAD /api/files支持limit与cursor limit默认100且范围1至100 排序键固定为created_at加id 有下一页时返回next_cursor
 SQLite查询使用严格大于游标的复合条件和limit加一行探测 不使用OFFSET 删除已浏览记录不会让后续页位置前移 同秒记录由ID稳定打破平局
@@ -96,7 +127,7 @@ Host要求单个非空 仍无完整Host语法校验 无超时 无并发
 格式错误400 未知路径404 已知路径方法不允许405并带Allow 正文超限413 Expect不支持417 传输编码与未实现方法501
 错误使用固定JSON正文 HEAD只发送响应头 路径按问号分开查询部分 当前不解释查询参数 不做解码或归一化
 
-教程在对话完整发送 本地 docs/lessons/day01.md 至 day24.md 用于助手保留上下文 固定复盘日取消 每日仅验证核心功能
+教程在对话完整发送 本地 docs/lessons/day01.md 至 day25.md 用于助手保留上下文 固定复盘日取消 每日仅验证核心功能
 
 在 Linux 工程目录 `~/projects/netdisk` 执行
 

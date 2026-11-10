@@ -6,6 +6,10 @@
 #include "file_catalog.h"
 #include "metadata_database.h"
 #include "file_metadata_store.h"
+#include "publishing_recovery.h"
+// ===== DAY 27 ADDED BEGIN 接入启动删除恢复 =====
+#include "deletion_recovery.h"
+// ===== DAY 27 ADDED END =====
 
 #include <algorithm>
 #include <arpa/inet.h>
@@ -91,7 +95,9 @@ bool handle_client(int client_fd, FileMetadataStore& metadata)
               << " version=" << line.version << '\n';
     std::string_view file_id;
     if (match_file_content(line.target, file_id))
-        return send_file_content(client_fd, parser, file_id);
+    {
+        return send_file_content(client_fd, parser, file_id, metadata);
+    }
     if (is_file_catalog_request(line))
         return send_response(client_fd, file_catalog_response(parser, metadata),
                              line.method == "HEAD");
@@ -99,34 +105,59 @@ bool handle_client(int client_fd, FileMetadataStore& metadata)
     {
         const std::string_view target(line.target);
         const bool permanent = target.substr(0, target.find('?')) == "/api/files";
-        const bool stored = permanent
-            ? upload.publish(parser.body_size()) : upload.close_file();
-        if (!stored)
+        if (!permanent)
         {
-            print_system_error("finalize upload", upload.error());
-            return send_response(client_fd, error_response(500), false);
+            if (!upload.close_file())
+            {
+                print_system_error("finalize upload", upload.error());
+                return send_response(client_fd, error_response(500), false);
+            }
         }
         std::cout << "temporary bytes=" << parser.body_size()
                   << " buffered bytes=" << parser.body().size() << '\n';
         if (permanent)
         {
+            if (!upload.prepare_publish(parser.body_size()))
+            {
+                print_system_error("prepare upload publication", upload.error());
+                return send_response(client_fd, error_response(500), false);
+            }
             const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(
                 std::chrono::system_clock::now().time_since_epoch()).count();
             const std::string default_name = upload.id() + ".bin";
             const auto result = seconds < 0
                 ? MetadataResult::Error
-                : metadata.create_ready(upload.id(), default_name, parser.body_size(),
-                                        static_cast<std::int64_t>(seconds));
+                : metadata.create_publishing(upload.id(), default_name, parser.body_size(),
+                                             static_cast<std::int64_t>(seconds));
             if (result != MetadataResult::Ok)
             {
-                std::cerr << "create file metadata failed: "
+                std::cerr << "create publishing metadata failed: "
                           << (seconds < 0 ? "system clock is before Unix epoch"
                                           : metadata.error_message()) << '\n';
-                if (!upload.discard_published())
-                    print_system_error("discard published object", upload.error());
                 return send_response(client_fd, error_response(500), false);
             }
-            std::cout << "published id=" << upload.id() << '\n';
+            if (!upload.publish_prepared())
+            {
+                print_system_error("publish prepared object", upload.error());
+                const auto cancelled = metadata.cancel_publishing(upload.id());
+                if (cancelled != MetadataResult::Ok)
+                    std::cerr << "cancel publishing metadata failed: "
+                              << (cancelled == MetadataResult::NotFound
+                                      ? "publishing row is missing"
+                                      : metadata.error_message()) << '\n';
+                return send_response(client_fd, error_response(500), false);
+            }
+            const auto ready = metadata.mark_ready(upload.id());
+            if (ready != MetadataResult::Ok)
+            {
+                std::cerr << "mark published object ready failed: "
+                          << (ready == MetadataResult::NotFound
+                                  ? "publishing row is missing"
+                                  : metadata.error_message())
+                          << " leaving publishing state for recovery\n";
+                return send_response(client_fd, error_response(500), false);
+            }
+            std::cout << "published ready id=" << upload.id() << '\n';
         }
     }
     return send_response(client_fd, route_request(parser, upload.id()), line.method == "HEAD");
@@ -152,6 +183,30 @@ int main()
                   << file_metadata.error_message() << '\n';
         return 1;
     }
+
+    PublishingRecovery recovery(file_metadata);
+    PublishingRecoveryReport recovery_report;
+    if (!recovery.run(recovery_report))
+    {
+        std::cerr << "publishing recovery failed: "
+                  << recovery.error_message() << '\n';
+        return 1;
+    }
+    std::cout << "publishing recovery completed=" << recovery_report.completed
+              << " cancelled=" << recovery_report.cancelled << '\n';
+
+    // ===== DAY 27 ADDED BEGIN 监听前完成遗留deleting记录 =====
+    DeletionRecovery deletion_recovery(file_metadata);
+    DeletionRecoveryReport deletion_report;
+    if (!deletion_recovery.run(deletion_report))
+    {
+        std::cerr << "deletion recovery failed: "
+                  << deletion_recovery.error_message() << '\n';
+        return 1;
+    }
+    std::cout << "deletion recovery completed=" << deletion_report.completed
+              << " objects_removed=" << deletion_report.objects_removed << '\n';
+    // ===== DAY 27 ADDED END =====
 
     const int raw_fd = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (raw_fd == -1)

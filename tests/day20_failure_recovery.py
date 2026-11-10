@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import sqlite3
 import struct
 import subprocess
 import sys
@@ -51,6 +52,17 @@ def wait_for_health(process):
     wait_for(process, healthy, "service did not recover for a later health request")
 
 
+# ===== DAY 25 ADDED BEGIN 为故障夹具写入ready元数据 =====
+def add_ready_metadata(root, file_id, size):
+    with sqlite3.connect(root / "data" / "netdisk.db") as database:
+        database.execute(
+            "INSERT INTO files(id, name, size, state, created_at) "
+            "VALUES(?, ?, ?, 'ready', ?)",
+            (file_id, f"{file_id}.bin", size, max(0, int(time.time()))),
+        )
+# ===== DAY 25 ADDED END =====
+
+
 def run_checks(root, process):
     uploads = root / "data" / "uploads"
     objects = root / "data" / "objects"
@@ -64,6 +76,9 @@ def run_checks(root, process):
 
     denied = objects / "upload-Deny20"
     denied.write_bytes(b"permission fixture")
+    # ===== DAY 25 ADDED BEGIN 下载故障夹具必须处于ready状态 =====
+    add_ready_metadata(root, denied.name, len(b"permission fixture"))
+    # ===== DAY 25 ADDED END =====
     denied.chmod(0)
     try:
         if os.geteuid() == 0:
@@ -103,6 +118,12 @@ def run_checks(root, process):
     finally:
         saved_objects.rename(objects)
     wait_for_health(process)
+    # ===== DAY 25 ADDED BEGIN 发布失败必须撤销publishing记录 =====
+    with sqlite3.connect(root / "data" / "netdisk.db") as database:
+        require(database.execute(
+            "SELECT COUNT(*) FROM files WHERE state = 'publishing'").fetchone()[0] == 0,
+            "failed publication left publishing metadata")
+    # ===== DAY 25 ADDED END =====
     require({path.name for path in objects.iterdir()} == {denied.name},
             "failed publication changed the object set")
     print("PASS: publication failure cleans its temporary file and later requests succeed")
@@ -155,6 +176,9 @@ def run_checks(root, process):
     large_id = "upload-Large2"
     large_path = objects / large_id
     large_path.write_bytes(bytes(range(256)) * (64 * 1024))
+    # ===== DAY 25 ADDED BEGIN 中断下载夹具必须处于ready状态 =====
+    add_ready_metadata(root, large_id, large_path.stat().st_size)
+    # ===== DAY 25 ADDED END =====
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         sock.settimeout(TIMEOUT)

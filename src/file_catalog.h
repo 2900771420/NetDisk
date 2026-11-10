@@ -7,10 +7,8 @@
 #include <nlohmann/json.hpp>
 #include <filesystem>
 #include <iostream>
-// ===== DAY 24 ADDED BEGIN 支持分页数字边界 =====
 #include <cstdint>
 #include <limits>
-// ===== DAY 24 ADDED END =====
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -50,7 +48,6 @@ inline bool stored_object_is_regular(std::string_view id)
     return fs::is_regular_file(status);
 }
 
-// ===== DAY 24 ADDED BEGIN 解析limit与复合cursor查询参数 =====
 inline bool parse_nonnegative_int64(std::string_view text, std::int64_t& output)
 {
     if (text.empty()) return false;
@@ -124,9 +121,7 @@ inline std::string make_file_cursor(const FileMetadata& file)
 {
     return std::to_string(file.created_at) + "." + file.id;
 }
-// ===== DAY 24 ADDED END =====
 
-// ===== DAY 24 MODIFIED BEGIN 返回当前页并在需要时附带next_cursor =====
 inline nlohmann::json list_file_objects(FileMetadataStore& store,
                                         const FilePageRequest& page)
 {
@@ -158,7 +153,6 @@ inline nlohmann::json list_file_objects(FileMetadataStore& store)
 {
     return list_file_objects(store, FilePageRequest{});
 }
-// ===== DAY 24 MODIFIED END =====
 
 inline bool is_file_catalog_request(const RequestLine& line)
 {
@@ -190,11 +184,9 @@ inline HttpResponse file_catalog_response(const RequestParser& request,
         nlohmann::json document;
         if (listing)
         {
-            // ===== DAY 24 MODIFIED BEGIN 列表请求校验分页参数 =====
             FilePageRequest page;
             if (!parse_file_page(target, page)) return error_response(400);
             document = list_file_objects(store, page);
-            // ===== DAY 24 MODIFIED END =====
         }
         else
         {
@@ -229,12 +221,36 @@ inline HttpResponse file_catalog_response(const RequestParser& request,
             }
             if (line.method == "DELETE")
             {
-                if (!std::filesystem::remove(object_path)) return error_response(404);
-                const auto erased = store.erase_ready(id);
+                // ===== DAY 27 DELETED 删除先unlink再直接擦除ready元数据的不可恢复流程 =====
+                // ===== DAY 27 MODIFIED BEGIN 先隐藏文件再删除对象并提交删除完成 =====
+                std::error_code size_error;
+                const auto disk_size = std::filesystem::file_size(object_path, size_error);
+                if (size_error)
+                    throw std::filesystem::filesystem_error(
+                        "read deleting object size", object_path, size_error);
+                if (disk_size != file.size)
+                    throw std::runtime_error(
+                        "deleting object size differs from metadata");
+
+                const auto marked = store.mark_deleting(id);
+                if (marked == MetadataResult::NotFound)
+                    return {404, "Not Found", "application/json",
+                        R"({"error":{"code":"not_found","message":"File not found"}})"};
+                if (marked != MetadataResult::Ok)
+                    throw std::runtime_error(store.error_message());
+
+                std::error_code remove_error;
+                std::filesystem::remove(object_path, remove_error);
+                if (remove_error)
+                    throw std::filesystem::filesystem_error(
+                        "remove deleting object", object_path, remove_error);
+
+                const auto erased = store.erase_deleting(id);
                 if (erased == MetadataResult::NotFound)
-                    throw std::runtime_error("ready metadata disappeared during delete");
+                    throw std::runtime_error("deleting metadata disappeared during delete");
                 if (erased != MetadataResult::Ok)
                     throw std::runtime_error(store.error_message());
+                // ===== DAY 27 MODIFIED END =====
                 return {204, "No Content", "", ""};
             }
         }

@@ -3,6 +3,7 @@ from pathlib import Path
 import os
 import re
 import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -45,6 +46,17 @@ def exchange(method, target, payload=b""):
     return status, headers, body
 
 
+# ===== DAY 25 ADDED BEGIN 为磁盘夹具补充ready元数据 =====
+def add_ready_metadata(root, file_id, size):
+    with sqlite3.connect(root / "data" / "netdisk.db") as database:
+        database.execute(
+            "INSERT INTO files(id, name, size, state, created_at) "
+            "VALUES(?, ?, ?, 'ready', ?)",
+            (file_id, f"{file_id}.bin", size, max(0, int(time.time()))),
+        )
+# ===== DAY 25 ADDED END =====
+
+
 def run_checks(root):
     objects = root / "data" / "objects"
     ids = []
@@ -64,6 +76,9 @@ def run_checks(root):
     large_id = "upload-Large1"
     require(large_id not in ids, "fixture ID collision")
     (objects / large_id).write_bytes(large)
+    # ===== DAY 25 ADDED BEGIN 未登记对象不再允许直接下载 =====
+    add_ready_metadata(root, large_id, len(large))
+    # ===== DAY 25 ADDED END =====
     status, _, body = exchange("GET", f"/api/files/{large_id}/content")
     require(status == 200 and body == large, "multi-buffer download differs")
     print("PASS: 262149-byte disk fixture download across buffer boundaries")
@@ -90,6 +105,11 @@ def run_checks(root):
     (objects / "upload-Link01").symlink_to(outside)
     (objects / "upload-Dir001").mkdir()
     os.mkfifo(objects / "upload-Fifo01")
+    # ===== DAY 25 ADDED BEGIN 非普通文件检查需要先通过ready可见性门槛 =====
+    add_ready_metadata(root, "upload-Link01", len(b"outside secret"))
+    add_ready_metadata(root, "upload-Dir001", 0)
+    add_ready_metadata(root, "upload-Fifo01", 0)
+    # ===== DAY 25 ADDED END =====
     for file_id in (missing, "upload-Link01", "upload-Dir001", "upload-Fifo01"):
         status, _, body = exchange("GET", f"/api/files/{file_id}/content")
         require(status == 404 and b"outside secret" not in body,

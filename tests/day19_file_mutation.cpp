@@ -58,8 +58,12 @@ int main()
                 "initialize metadata database");
         FileMetadataStore store(database.get());
         require(store.prepare(), "prepare metadata statements");
-        require(store.create_ready("upload-Abc123", "upload-Abc123.bin", 3, 1) ==
-                MetadataResult::Ok, "insert fixture metadata");
+        // ===== DAY 25 MODIFIED BEGIN 测试夹具遵循publishing到ready状态转换 =====
+        require(store.create_publishing(
+                    "upload-Abc123", "upload-Abc123.bin", 3, 1) == MetadataResult::Ok &&
+                store.mark_ready("upload-Abc123") == MetadataResult::Ok,
+                "publish fixture metadata");
+        // ===== DAY 25 MODIFIED END =====
         const std::string name = u8"笔记' SET state='deleting' -- 新版.txt";
         const auto renamed = request(
             store, "PATCH", nlohmann::json{{"name", name}}.dump());

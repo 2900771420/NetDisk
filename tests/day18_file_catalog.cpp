@@ -54,8 +54,12 @@ int main()
             file.write("A\0B", 3);
             require(file.good(), "write fixture");
         }
-        require(store.create_ready("upload-Abc123", "upload-Abc123.bin", 3, 1) ==
-                MetadataResult::Ok, "insert fixture metadata");
+        // ===== DAY 25 MODIFIED BEGIN 测试夹具遵循publishing到ready状态转换 =====
+        require(store.create_publishing(
+                    "upload-Abc123", "upload-Abc123.bin", 3, 1) == MetadataResult::Ok &&
+                store.mark_ready("upload-Abc123") == MetadataResult::Ok,
+                "publish fixture metadata");
+        // ===== DAY 25 MODIFIED END =====
         std::filesystem::create_directory("data/objects/upload-Dir001");
         const auto files = list_file_objects(store).at("files");
         require(files.size() == 1 && files.at(0).at("size") == 3 &&
