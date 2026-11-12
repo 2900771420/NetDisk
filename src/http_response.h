@@ -10,6 +10,9 @@ struct HttpResponse
     std::string body;
     std::string_view allow = {};
     std::string file_id = {};
+    // ===== DAY 29 ADDED BEGIN 上传成功响应携带内容摘要 =====
+    std::string sha256 = {};
+    // ===== DAY 29 ADDED END =====
 };
 
 inline HttpResponse error_response(int status, std::string_view allow = {})
@@ -52,7 +55,10 @@ inline HttpResponse parser_error_response(RequestError error)
     }
 }
 
-inline HttpResponse route_request(const RequestParser& request, std::string_view published_id = {})
+// ===== DAY 29 MODIFIED BEGIN 正式上传必须同时提供文件ID和SHA256 =====
+inline HttpResponse route_request(const RequestParser& request,
+                                  std::string_view published_id = {},
+                                  std::string_view published_sha256 = {})
 {
     const auto& line = request.line();
     if (line.method != "GET" && line.method != "HEAD" && line.method != "POST" &&
@@ -84,13 +90,15 @@ inline HttpResponse route_request(const RequestParser& request, std::string_view
     if (path == "/api/files")
     {
         if (line.method != "POST") return error_response(405, "POST");
-        if (published_id.empty()) return error_response(500);
+        if (published_id.empty() || published_sha256.empty()) return error_response(500);
         HttpResponse response{201, "Created", "application/json", R"({"status":"created"})"};
         response.file_id = published_id;
+        response.sha256 = published_sha256;
         return response;
     }
     return error_response(404);
 }
+// ===== DAY 29 MODIFIED END =====
 
 inline std::string build_response(const HttpResponse& response, bool head_only = false)
 {
@@ -103,6 +111,9 @@ inline std::string build_response(const HttpResponse& response, bool head_only =
     wire += "Connection: close\r\n";
     if (!response.allow.empty()) wire += "Allow: " + std::string(response.allow) + "\r\n";
     if (!response.file_id.empty()) wire += "X-File-Id: " + response.file_id + "\r\n";
+    // ===== DAY 29 ADDED BEGIN 序列化服务端计算的摘要响应头 =====
+    if (!response.sha256.empty()) wire += "X-File-Sha256: " + response.sha256 + "\r\n";
+    // ===== DAY 29 ADDED END =====
     wire += "\r\n";
     if (!head_only) wire.append(response.body);
     return wire;

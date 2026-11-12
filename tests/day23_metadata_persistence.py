@@ -1,4 +1,7 @@
 import argparse
+# ===== DAY 29 ADDED BEGIN 校验持久化摘要 =====
+import hashlib
+# ===== DAY 29 ADDED END =====
 import json
 from pathlib import Path
 import re
@@ -26,15 +29,18 @@ def create_and_rename(root, payload, name):
 
 def inspect_database(root, file_id, payload, name):
     with sqlite3.connect(root / "data" / "netdisk.db") as database:
+        # ===== DAY 29 MODIFIED BEGIN 检查schema版本与上传摘要 =====
         rows = database.execute(
-            "SELECT id, name, size, state, created_at FROM files").fetchall()
+            "SELECT id, name, size, state, created_at, sha256 FROM files").fetchall()
         require(len(rows) == 1, "unexpected metadata row count")
         row = rows[0]
         require(row[0] == file_id and row[1] == name and row[2] == len(payload) and
-                row[3] == "ready" and isinstance(row[4], int) and row[4] > 0,
+                row[3] == "ready" and isinstance(row[4], int) and row[4] > 0 and
+                row[5] == hashlib.sha256(payload).hexdigest(),
                 "persisted metadata values differ")
-        require(database.execute("PRAGMA user_version").fetchone()[0] == 1,
+        require(database.execute("PRAGMA user_version").fetchone()[0] == 2,
                 "schema version changed")
+        # ===== DAY 29 MODIFIED END =====
     print("PASS: database stores one exact ready row with size and creation time")
 
 

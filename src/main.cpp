@@ -7,9 +7,8 @@
 #include "metadata_database.h"
 #include "file_metadata_store.h"
 #include "publishing_recovery.h"
-// ===== DAY 27 ADDED BEGIN 接入启动删除恢复 =====
 #include "deletion_recovery.h"
-// ===== DAY 27 ADDED END =====
+#include "storage_audit.h"
 
 #include <algorithm>
 #include <arpa/inet.h>
@@ -125,10 +124,13 @@ bool handle_client(int client_fd, FileMetadataStore& metadata)
             const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(
                 std::chrono::system_clock::now().time_since_epoch()).count();
             const std::string default_name = upload.id() + ".bin";
+            // ===== DAY 29 MODIFIED BEGIN 摘要与publishing元数据一起提交 =====
             const auto result = seconds < 0
                 ? MetadataResult::Error
                 : metadata.create_publishing(upload.id(), default_name, parser.body_size(),
-                                             static_cast<std::int64_t>(seconds));
+                                             static_cast<std::int64_t>(seconds),
+                                             upload.sha256());
+            // ===== DAY 29 MODIFIED END =====
             if (result != MetadataResult::Ok)
             {
                 std::cerr << "create publishing metadata failed: "
@@ -160,7 +162,10 @@ bool handle_client(int client_fd, FileMetadataStore& metadata)
             std::cout << "published ready id=" << upload.id() << '\n';
         }
     }
-    return send_response(client_fd, route_request(parser, upload.id()), line.method == "HEAD");
+    // ===== DAY 29 MODIFIED BEGIN 上传成功同时返回文件ID和SHA256 =====
+    return send_response(client_fd, route_request(parser, upload.id(), upload.sha256()),
+                         line.method == "HEAD");
+    // ===== DAY 29 MODIFIED END =====
 }
 
 int main()
@@ -174,7 +179,9 @@ int main()
         std::cerr << "metadata database failed: " << metadata.error_message() << '\n';
         return 1;
     }
-    std::cout << "metadata database ready path=data/netdisk.db schema=1\n";
+    // ===== DAY 29 MODIFIED BEGIN 输出迁移后的schema版本 =====
+    std::cout << "metadata database ready path=data/netdisk.db schema=2\n";
+    // ===== DAY 29 MODIFIED END =====
 
     FileMetadataStore file_metadata(metadata.get());
     if (!file_metadata.prepare())
@@ -195,7 +202,6 @@ int main()
     std::cout << "publishing recovery completed=" << recovery_report.completed
               << " cancelled=" << recovery_report.cancelled << '\n';
 
-    // ===== DAY 27 ADDED BEGIN 监听前完成遗留deleting记录 =====
     DeletionRecovery deletion_recovery(file_metadata);
     DeletionRecoveryReport deletion_report;
     if (!deletion_recovery.run(deletion_report))
@@ -206,7 +212,33 @@ int main()
     }
     std::cout << "deletion recovery completed=" << deletion_report.completed
               << " objects_removed=" << deletion_report.objects_removed << '\n';
-    // ===== DAY 27 ADDED END =====
+
+    StorageAuditor storage_auditor(file_metadata);
+    StorageAuditReport audit_report;
+    if (!storage_auditor.run(audit_report))
+    {
+        std::cerr << "storage audit failed: "
+                  << storage_auditor.error_message() << '\n';
+        return 1;
+    }
+    std::cout << "storage audit ready=" << audit_report.ready_records
+              << " disk_entries=" << audit_report.disk_entries
+              << " healthy=" << audit_report.healthy_objects
+              << " findings=" << audit_report.findings.size() << '\n';
+    for (const StorageAuditFinding& finding : audit_report.findings)
+    {
+        std::cerr << "storage audit finding kind="
+                  << storage_audit_kind_name(finding.kind)
+                  << " id=" << escape_storage_audit_value(finding.id);
+        if (finding.kind == StorageAuditFindingKind::SizeMismatch)
+            std::cerr << " expected_size=" << finding.expected_size
+                      << " actual_size=" << finding.actual_size;
+        else if (finding.kind == StorageAuditFindingKind::MissingObject ||
+                 finding.kind == StorageAuditFindingKind::NonRegularObject ||
+                 finding.kind == StorageAuditFindingKind::InvalidMetadataId)
+            std::cerr << " expected_size=" << finding.expected_size;
+        std::cerr << '\n';
+    }
 
     const int raw_fd = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (raw_fd == -1)

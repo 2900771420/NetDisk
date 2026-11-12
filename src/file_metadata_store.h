@@ -16,6 +16,9 @@ struct FileMetadata
     std::string name;
     std::uint64_t size = 0;
     std::int64_t created_at = 0;
+    // ===== DAY 29 ADDED BEGIN 空字符串表示旧数据尚无摘要 =====
+    std::string sha256;
+    // ===== DAY 29 ADDED END =====
 };
 
 struct FilePageRequest
@@ -51,11 +54,9 @@ public:
         sqlite3_finalize(ready_);
         sqlite3_finalize(cancel_);
         sqlite3_finalize(list_publishing_);
-        // ===== DAY 27 ADDED BEGIN 释放删除状态机与恢复查询语句 =====
         sqlite3_finalize(mark_deleting_);
         sqlite3_finalize(erase_deleting_);
         sqlite3_finalize(list_deleting_);
-        // ===== DAY 27 ADDED END =====
         sqlite3_finalize(list_);
         sqlite3_finalize(find_);
         sqlite3_finalize(rename_);
@@ -76,9 +77,10 @@ public:
             return false;
         }
 
+        // ===== DAY 29 MODIFIED BEGIN 所有元数据读写携带可空SHA256 =====
         if (!prepare_statement(create_,
-                "INSERT INTO files(id, name, size, state, created_at) "
-                "VALUES(?1, ?2, ?3, 'publishing', ?4);",
+                "INSERT INTO files(id, name, size, state, created_at, sha256) "
+                "VALUES(?1, ?2, ?3, 'publishing', ?4, ?5);",
                 "prepare create publishing file") ||
             !prepare_statement(ready_,
                 "UPDATE files SET state = 'ready' "
@@ -88,11 +90,9 @@ public:
                 "DELETE FROM files WHERE id = ?1 AND state = 'publishing';",
                 "prepare cancel publishing file") ||
             !prepare_statement(list_publishing_,
-                "SELECT id, name, size, created_at FROM files "
+                "SELECT id, name, size, created_at, sha256 FROM files "
                 "WHERE state = 'publishing' ORDER BY created_at, id;",
                 "prepare list publishing files") ||
-            // ===== DAY 27 DELETED 删除直接擦除ready记录的预编译语句 改用deleting状态机 =====
-            // ===== DAY 27 ADDED BEGIN 准备删除状态转换与启动恢复查询 =====
             !prepare_statement(mark_deleting_,
                 "UPDATE files SET state = 'deleting' "
                 "WHERE id = ?1 AND state = 'ready';",
@@ -101,22 +101,22 @@ public:
                 "DELETE FROM files WHERE id = ?1 AND state = 'deleting';",
                 "prepare erase deleting file") ||
             !prepare_statement(list_deleting_,
-                "SELECT id, name, size, created_at FROM files "
+                "SELECT id, name, size, created_at, sha256 FROM files "
                 "WHERE state = 'deleting' ORDER BY created_at, id;",
                 "prepare list deleting files") ||
-            // ===== DAY 27 ADDED END =====
             !prepare_statement(list_,
-                "SELECT id, name, size, created_at FROM files "
+                "SELECT id, name, size, created_at, sha256 FROM files "
                 "WHERE state = 'ready' AND "
                 "(?1 = 0 OR created_at > ?2 OR (created_at = ?2 AND id > ?3)) "
                 "ORDER BY created_at, id LIMIT ?4;", "prepare list files") ||
             !prepare_statement(find_,
-                "SELECT id, name, size, created_at FROM files "
+                "SELECT id, name, size, created_at, sha256 FROM files "
                 "WHERE id = ?1 AND state = 'ready';", "prepare find file") ||
             !prepare_statement(rename_,
                 "UPDATE files SET name = ?1 WHERE id = ?2 AND state = 'ready';",
                 "prepare rename file"))
             return false;
+        // ===== DAY 29 MODIFIED END =====
 
         prepared_ = true;
         clear_error();
@@ -124,15 +124,20 @@ public:
     }
 
     MetadataResult create_publishing(std::string_view id, std::string_view name,
-                                     std::uint64_t size, std::int64_t created_at)
+                                     std::uint64_t size, std::int64_t created_at,
+                                     std::string_view sha256 = {})
     {
         if (!start_statement(create_, "create publishing metadata"))
             return MetadataResult::Error;
+        // ===== DAY 29 MODIFIED BEGIN 校验并持久化上传阶段已经完成的摘要 =====
         if (size > static_cast<std::uint64_t>(std::numeric_limits<sqlite3_int64>::max()) ||
-            created_at < 0)
+            created_at < 0 || (!sha256.empty() && !valid_sha256_hex(sha256)))
         {
-            remember_error("create publishing metadata", SQLITE_TOOBIG,
-                           "size or creation time is outside SQLite INTEGER range");
+            const bool bad_digest = !sha256.empty() && !valid_sha256_hex(sha256);
+            remember_error("create publishing metadata",
+                           bad_digest ? SQLITE_CONSTRAINT : SQLITE_TOOBIG,
+                           bad_digest ? "SHA256 must be 64 lowercase hexadecimal characters"
+                                      : "size or creation time is outside SQLite INTEGER range");
             return MetadataResult::Error;
         }
         if (!begin_transaction("begin publishing metadata transaction"))
@@ -147,7 +152,8 @@ public:
                 bind_integer(create_, 3, static_cast<sqlite3_int64>(size),
                              "bind publishing file size") &&
                 bind_integer(create_, 4, static_cast<sqlite3_int64>(created_at),
-                             "bind publishing creation time");
+                             "bind publishing creation time") &&
+                bind_nullable_text(create_, 5, sha256, "bind publishing SHA256");
             if (bound) result = sqlite3_step(create_);
         }
         if (!bound)
@@ -168,10 +174,10 @@ public:
             return MetadataResult::Error;
         }
         clear_error();
+        // ===== DAY 29 MODIFIED END =====
         return MetadataResult::Ok;
     }
 
-    // ===== DAY 27 MODIFIED BEGIN 发布状态转换改用通用事务模板 =====
     MetadataResult mark_ready(std::string_view id)
     {
         return change_state(ready_, id, "mark file ready",
@@ -185,7 +191,6 @@ public:
                             "begin publishing state transaction",
                             "commit cancel metadata transaction");
     }
-    // ===== DAY 27 MODIFIED END =====
 
     MetadataResult list_publishing(std::vector<FileMetadata>& output)
     {
@@ -218,7 +223,6 @@ public:
         }
     }
 
-    // ===== DAY 27 ADDED BEGIN 提交删除意图并只读取deleting记录供恢复 =====
     MetadataResult mark_deleting(std::string_view id)
     {
         return change_state(mark_deleting_, id, "mark file deleting",
@@ -263,7 +267,6 @@ public:
             output.push_back(std::move(file));
         }
     }
-    // ===== DAY 27 ADDED END =====
 
     MetadataResult list_ready(const FilePageRequest& page,
                               std::vector<FileMetadata>& output, bool& has_more)
@@ -369,8 +372,6 @@ public:
             ? MetadataResult::NotFound : MetadataResult::Ok;
     }
 
-    // ===== DAY 27 DELETED 删除erase_ready接口 防止绕过deleting状态直接删除公开元数据 =====
-
     int error_code() const noexcept
     {
         return error_code_;
@@ -404,6 +405,16 @@ private:
     {
         return code & 0xff;
     }
+
+    // ===== DAY 29 ADDED BEGIN 验证数据库摘要的规范编码 =====
+    static bool valid_sha256_hex(std::string_view value) noexcept
+    {
+        if (value.size() != 64) return false;
+        for (const char ch : value)
+            if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'))) return false;
+        return true;
+    }
+    // ===== DAY 29 ADDED END =====
 
     bool prepare_statement(sqlite3_stmt*& statement, const char* sql,
                            const char* operation)
@@ -442,6 +453,18 @@ private:
         remember_error(operation, result, sqlite3_errmsg(database_));
         return false;
     }
+
+    // ===== DAY 29 ADDED BEGIN 旧记录允许NULL摘要 新上传绑定规范摘要 =====
+    bool bind_nullable_text(sqlite3_stmt* statement, int index, std::string_view value,
+                            const char* operation)
+    {
+        if (!value.empty()) return bind_text(statement, index, value, operation);
+        const int result = sqlite3_bind_null(statement, index);
+        if (result == SQLITE_OK) return true;
+        remember_error(operation, result, sqlite3_errmsg(database_));
+        return false;
+    }
+    // ===== DAY 29 ADDED END =====
 
     bool bind_integer(sqlite3_stmt* statement, int index, sqlite3_int64 value,
                       const char* operation)
@@ -482,7 +505,6 @@ private:
         sqlite3_exec(database_, "ROLLBACK;", nullptr, nullptr, nullptr);
     }
 
-    // ===== DAY 27 MODIFIED BEGIN 复用事务模板处理发布和删除状态转换 =====
     MetadataResult change_state(sqlite3_stmt* statement,
                                 std::string_view id,
                                 const char* operation,
@@ -530,15 +552,17 @@ private:
         clear_error();
         return MetadataResult::Ok;
     }
-    // ===== DAY 27 MODIFIED END =====
 
     bool read_row(sqlite3_stmt* statement, FileMetadata& output,
                   const char* operation)
     {
+        // ===== DAY 29 MODIFIED BEGIN 读取并验证可空摘要列 =====
+        const int digest_type = sqlite3_column_type(statement, 4);
         if (sqlite3_column_type(statement, 0) != SQLITE_TEXT ||
             sqlite3_column_type(statement, 1) != SQLITE_TEXT ||
             sqlite3_column_type(statement, 2) != SQLITE_INTEGER ||
-            sqlite3_column_type(statement, 3) != SQLITE_INTEGER)
+            sqlite3_column_type(statement, 3) != SQLITE_INTEGER ||
+            (digest_type != SQLITE_NULL && digest_type != SQLITE_TEXT))
         {
             remember_error(operation, SQLITE_MISMATCH, "metadata column type mismatch");
             return false;
@@ -549,8 +573,16 @@ private:
         const int name_size = sqlite3_column_bytes(statement, 1);
         const sqlite3_int64 size = sqlite3_column_int64(statement, 2);
         const sqlite3_int64 created_at = sqlite3_column_int64(statement, 3);
+        const auto* digest = digest_type == SQLITE_TEXT
+            ? sqlite3_column_text(statement, 4) : nullptr;
+        const int digest_size = digest_type == SQLITE_TEXT
+            ? sqlite3_column_bytes(statement, 4) : 0;
+        const std::string_view digest_view = digest == nullptr ? std::string_view{}
+            : std::string_view(reinterpret_cast<const char*>(digest),
+                               static_cast<std::size_t>(digest_size));
         if (id == nullptr || name == nullptr || id_size <= 0 || name_size <= 0 ||
-            size < 0 || created_at < 0)
+            size < 0 || created_at < 0 ||
+            (digest_type == SQLITE_TEXT && !valid_sha256_hex(digest_view)))
         {
             remember_error(operation, SQLITE_CORRUPT, "invalid metadata row");
             return false;
@@ -560,6 +592,11 @@ private:
                            static_cast<std::size_t>(name_size));
         output.size = static_cast<std::uint64_t>(size);
         output.created_at = static_cast<std::int64_t>(created_at);
+        if (digest_view.empty())
+            output.sha256.clear();
+        else
+            output.sha256.assign(digest_view.data(), digest_view.size());
+        // ===== DAY 29 MODIFIED END =====
         return true;
     }
 
@@ -582,11 +619,9 @@ private:
     sqlite3_stmt* ready_ = nullptr;
     sqlite3_stmt* cancel_ = nullptr;
     sqlite3_stmt* list_publishing_ = nullptr;
-    // ===== DAY 27 ADDED BEGIN 持有删除状态机与恢复查询语句 =====
     sqlite3_stmt* mark_deleting_ = nullptr;
     sqlite3_stmt* erase_deleting_ = nullptr;
     sqlite3_stmt* list_deleting_ = nullptr;
-    // ===== DAY 27 ADDED END =====
     sqlite3_stmt* list_ = nullptr;
     sqlite3_stmt* find_ = nullptr;
     sqlite3_stmt* rename_ = nullptr;

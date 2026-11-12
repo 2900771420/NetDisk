@@ -36,12 +36,18 @@ int main()
                 == ParseState::Done, "parse empty upload");
     require(route_request(response_parser).status == 500, "201 before publication");
     std::string id = "upload-Abc123";
-    const auto response = route_request(response_parser, id);
+    // ===== DAY 29 MODIFIED BEGIN 发布响应要求同时拥有文件ID与摘要 =====
+    std::string digest(64, 'a');
+    const auto response = route_request(response_parser, id, digest);
     id.assign("changed");
+    digest.assign("changed");
     const auto wire = build_response(response);
     require(wire.find("HTTP/1.1 201 Created\r\n") == 0 &&
-            wire.find("\r\nX-File-Id: upload-Abc123\r\n") != std::string::npos,
-            "missing or borrowed file ID");
+            wire.find("\r\nX-File-Id: upload-Abc123\r\n") != std::string::npos &&
+            wire.find("\r\nX-File-Sha256: " + std::string(64, 'a') + "\r\n") !=
+                std::string::npos,
+            "missing or borrowed publication identity");
+    // ===== DAY 29 MODIFIED END =====
     require(wire.find("\r\nContent-Length: 20\r\n") != std::string::npos &&
             response.body == R"({"status":"created"})", "created response");
     RequestParser wrong_method;

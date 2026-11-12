@@ -11,6 +11,11 @@ target_link_libraries(netdisk PRIVATE nlohmann_json::nlohmann_json)
 find_package(SQLite3 REQUIRED)
 target_link_libraries(netdisk PRIVATE SQLite::SQLite3)
 
+# ===== DAY 29 ADDED BEGIN 引入OpenSSL EVP摘要实现 =====
+find_package(OpenSSL 1.1.1 REQUIRED COMPONENTS Crypto)
+target_link_libraries(netdisk PRIVATE OpenSSL::Crypto)
+# ===== DAY 29 ADDED END =====
+
 include(CTest)
 if(BUILD_TESTING)
     add_executable(io_tests tests/day06_io.cpp)
@@ -40,11 +45,17 @@ if(BUILD_TESTING)
 
     add_executable(stream_upload_tests tests/day12_stream_upload.cpp)
     target_include_directories(stream_upload_tests PRIVATE src)
+    # ===== DAY 29 MODIFIED BEGIN 临时上传测试链接摘要实现 =====
+    target_link_libraries(stream_upload_tests PRIVATE OpenSSL::Crypto)
+    # ===== DAY 29 MODIFIED END =====
     list(APPEND NETDISK_TARGETS stream_upload_tests)
     add_test(NAME stream_upload_tests COMMAND stream_upload_tests)
 
     add_executable(publish_tests tests/day13_publish.cpp)
     target_include_directories(publish_tests PRIVATE src)
+    # ===== DAY 29 MODIFIED BEGIN 发布测试链接摘要实现 =====
+    target_link_libraries(publish_tests PRIVATE OpenSSL::Crypto)
+    # ===== DAY 29 MODIFIED END =====
     list(APPEND NETDISK_TARGETS publish_tests)
     add_test(NAME publish_tests COMMAND publish_tests)
 
@@ -209,7 +220,6 @@ if(BUILD_TESTING)
         SKIP_RETURN_CODE 77
     )
 
-    # ===== DAY 27 ADDED BEGIN 注册deleting状态与启动删除恢复测试 =====
     add_executable(deletion_recovery_tests tests/day27_deletion_recovery.cpp)
     target_include_directories(deletion_recovery_tests PRIVATE src)
     target_link_libraries(deletion_recovery_tests PRIVATE SQLite::SQLite3)
@@ -226,7 +236,42 @@ if(BUILD_TESTING)
         RUN_SERIAL TRUE
         SKIP_RETURN_CODE 77
     )
-    # ===== DAY 27 ADDED END =====
+
+    add_executable(storage_audit_tests tests/day28_storage_audit.cpp)
+    target_include_directories(storage_audit_tests PRIVATE src)
+    target_link_libraries(storage_audit_tests PRIVATE SQLite::SQLite3)
+    list(APPEND NETDISK_TARGETS storage_audit_tests)
+    add_test(NAME storage_audit_tests COMMAND storage_audit_tests)
+
+    add_test(NAME storage_audit_integration_tests
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/day28_storage_audit.py"
+            "$<TARGET_FILE:netdisk>"
+    )
+    set_tests_properties(storage_audit_integration_tests PROPERTIES
+        TIMEOUT 30
+        RUN_SERIAL TRUE
+        SKIP_RETURN_CODE 77
+    )
+
+    # ===== DAY 29 ADDED BEGIN 注册SHA256与schema迁移测试 =====
+    add_executable(sha256_tests tests/day29_sha256.cpp)
+    target_include_directories(sha256_tests PRIVATE src)
+    target_link_libraries(sha256_tests PRIVATE OpenSSL::Crypto SQLite::SQLite3)
+    list(APPEND NETDISK_TARGETS sha256_tests)
+    add_test(NAME sha256_tests COMMAND sha256_tests)
+
+    add_test(NAME sha256_integration_tests
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/day29_sha256.py"
+            "$<TARGET_FILE:netdisk>"
+    )
+    set_tests_properties(sha256_integration_tests PROPERTIES
+        TIMEOUT 30
+        RUN_SERIAL TRUE
+        SKIP_RETURN_CODE 77
+    )
+    # ===== DAY 29 ADDED END =====
 endif()
 
 foreach(target IN LISTS NETDISK_TARGETS)

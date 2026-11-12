@@ -1,6 +1,6 @@
 # NetDisk HTTP API v0.1
 
-本文件记录第27单元当前功能基线 不表示完整实现HTTP/1.1 不表示公网安全评估通过
+本文件记录第29单元当前功能基线 不表示完整实现HTTP/1.1 不表示公网安全评估通过
 
 服务地址 `http://127.0.0.1:8080` 每个连接只处理一个请求 响应后关闭连接
 
@@ -9,7 +9,7 @@
 | 方法 | 路径 | 成功 | 正文或作用 |
 | --- | --- | --- | --- |
 | GET HEAD | `/health` | 200 | GET返回`OK\n` HEAD只返回头部 |
-| POST | `/api/files` | 201 | 原始二进制正文上传 返回固定JSON与`X-File-Id` |
+| POST | `/api/files` | 201 | 原始二进制正文上传 返回固定JSON 文件ID与SHA256 |
 | GET HEAD | `/api/files` | 200 | 返回分页列表和可选`next_cursor` |
 | GET HEAD | `/api/files/{id}` | 200 | 返回`id name size`详情 |
 | PATCH | `/api/files/{id}` | 200 | 正文必须为仅含字符串`name`的JSON |
@@ -20,9 +20,11 @@
 
 请求正文是原始文件字节 必须使用Content-Length 当前最大65536字节 不支持Transfer-Encoding和Expect
 
-成功响应正文固定为`{"status":"created"}` 文件ID从`X-File-Id`响应头获取 ID格式为`upload-`加六位ASCII字母数字
+成功响应正文固定为`{"status":"created"}` 文件ID从`X-File-Id`响应头获取 ID格式为`upload-`加六位ASCII字母数字 服务端内容摘要从`X-File-Sha256`获取 格式为64位小写十六进制SHA256
 
-上传先写入`data/uploads`临时文件 完整接收并关闭后取得稳定ID 第一个SQLite事务插入`publishing`元数据并提交 随后通过硬链接把对象发布到`data/objects` 第二个SQLite事务只把对应`publishing`记录切换为`ready`
+服务使用OpenSSL EVP上下文增量处理每次已经成功写入临时文件的字节 不缓存完整正文 分片边界不会改变最终摘要 完整接收并关闭文件后才完成摘要
+
+上传先写入`data/uploads`临时文件 完整接收并关闭后取得稳定ID与摘要 第一个SQLite事务同时插入`publishing`元数据和SHA256并提交 随后通过硬链接把对象发布到`data/objects` 第二个SQLite事务只把对应`publishing`记录切换为`ready`
 
 对象发布失败时尝试删除`publishing`记录 切换`ready`失败时保留对象与`publishing`记录供后续恢复 不删除可能已经成功提交的对象 只有第二个事务成功后才返回201
 
@@ -48,6 +50,15 @@
 
 删除恢复不扫描无元数据对象 也不删除任何`ready`对象
 
+发布与删除恢复完成后 服务分页读取全部`ready`元数据并遍历`data/objects`执行只读一致性审计
+
+- 报告非法元数据ID 缺失对象 大小不符和非普通`ready`路径
+- 报告没有`ready`元数据的孤立普通文件和未知非普通目录项
+- 数据异常只输出摘要与逐项日志 不删除对象 不修改元数据 不阻止服务监听
+- SQLite查询或目录遍历失败表示审计无法完成 此时服务终止启动
+
+未知目录项名称写入日志前会进行百分号编码 审计只比较ID 文件类型和大小 尚不验证内容摘要
+
 ## 元数据
 
 列表和详情字段如下
@@ -60,9 +71,9 @@
 }
 ```
 
-文件ID 显示名称 大小 状态和创建时间保存在`data/netdisk.db` 显示名称修改通过绑定参数的预编译语句写入SQLite 服务重启后仍保留
+文件ID 显示名称 大小 状态 创建时间和可空SHA256保存在`data/netdisk.db` schema版本为2 v1数据库启动时在事务内增加摘要列 旧记录保持NULL 新上传保存规范摘要 显示名称修改通过绑定参数的预编译语句写入SQLite 服务重启后仍保留
 
-当前文件JSON仍只返回`id name size` 创建时间暂未公开到HTTP接口 列表 详情和下载都只接受`ready`记录
+当前文件JSON仍只返回`id name size` 创建时间与SHA256暂未公开到列表或详情接口 列表 详情和下载都只接受`ready`记录
 
 列表接受`limit`和`cursor`两个查询参数 `limit`默认为100且范围为1至100 游标是服务端返回的不透明字符串 客户端应原样传回 不自行修改
 
@@ -78,7 +89,7 @@
 
 GET先查询`ready`元数据 再以16KiB缓冲区读取和发送 未登记对象和`publishing`对象即使已存在于磁盘也返回404 文件实际大小与元数据大小不一致返回500 HEAD发送与GET相同的Content-Length Content-Type和Content-Disposition但不发送正文
 
-当前不支持Range ETag If-Range 下载续传和内容摘要
+当前不支持Range ETag If-Range 下载续传 下载响应尚未携带内容摘要
 
 ## 删除
 
@@ -106,7 +117,7 @@ DELETE先确认正式对象是普通文件且大小匹配 第一个SQLite事务�
 
 - 串行阻塞 一次只处理一个客户端
 - 无读写超时 连接数限制和优雅退出
-- SQLite元数据 发布与删除状态事务 启动恢复与键集分页已实现 仍无摘要和HTTP创建时间字段
+- SQLite元数据 发布与删除状态事务 启动恢复 键集分页 只读一致性审计与新上传SHA256已实现 仍无摘要回填 内容比对 ETag和HTTP创建时间字段
 - 无用户 权限 文件夹 分享 配额 回收站和版本历史
 - 无Range 上传续传 并行上传和秒传
 - 只监听回环地址 没有TLS 不用于公网

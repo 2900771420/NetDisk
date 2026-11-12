@@ -1,6 +1,9 @@
 #pragma once
 
 #include "object_path.h"
+// ===== DAY 29 ADDED BEGIN 引入流式摘要所有者 =====
+#include "sha256_hasher.h"
+// ===== DAY 29 ADDED END =====
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
@@ -47,8 +50,12 @@ public:
                 return fail(errno);
             }
             if (n == 0) return fail(EIO);
-            written += static_cast<std::size_t>(n);
-            written_ += static_cast<std::size_t>(n);
+            // ===== DAY 29 MODIFIED BEGIN 只摘要已经成功写入临时文件的字节 =====
+            const auto count = static_cast<std::size_t>(n);
+            if (!sha256_.update(data.substr(written, count))) return fail(EIO);
+            written += count;
+            written_ += count;
+            // ===== DAY 29 MODIFIED END =====
         }
         return true;
     }
@@ -67,13 +74,14 @@ public:
     int error() const noexcept { return error_; }
     const char* path() const noexcept { return created_ ? path_ : ""; }
 
-    // ===== DAY 25 ADDED BEGIN 在文件发布前冻结长度并取得稳定ID =====
+    // ===== DAY 29 MODIFIED BEGIN 发布前冻结长度并完成增量摘要 =====
     bool prepare_publish(std::size_t expected)
     {
         if (error_ != 0) return false;
         if (!created_ || prepared_ || published_ || !id_.empty() || written_ != expected)
             return fail(EINVAL);
         if (!close_file()) return false;
+        if (!sha256_.finish(sha256_hex_)) return fail(EIO);
         const char* separator = std::strrchr(path_, '/');
         if (separator == nullptr || separator[1] == '\0') return fail(EINVAL);
         std::string candidate(separator + 1);
@@ -104,9 +112,8 @@ public:
     {
         return prepare_publish(expected) && publish_prepared();
     }
-    // ===== DAY 25 ADDED END =====
+    // ===== DAY 29 MODIFIED END =====
 
-    // ===== DAY 25 MODIFIED BEGIN 只允许删除已经链接的正式对象 =====
     bool discard_published()
     {
         if (id_.empty() || !published_) return fail(EINVAL);
@@ -117,9 +124,11 @@ public:
         id_.clear();
         return true;
     }
-    // ===== DAY 25 MODIFIED END =====
 
     const std::string& id() const noexcept { return id_; }
+    // ===== DAY 29 ADDED BEGIN 只在prepare_publish成功后公开最终摘要 =====
+    const std::string& sha256() const noexcept { return sha256_hex_; }
+    // ===== DAY 29 ADDED END =====
 
 private:
     bool fail(int error) noexcept
@@ -134,8 +143,10 @@ private:
     bool created_ = false;
     std::size_t written_ = 0;
     std::string id_;
-    // ===== DAY 25 ADDED BEGIN 区分已准备与已链接状态 =====
     bool prepared_ = false;
     bool published_ = false;
-    // ===== DAY 25 ADDED END =====
+    // ===== DAY 29 ADDED BEGIN 增量摘要上下文与最终十六进制值 =====
+    Sha256Hasher sha256_;
+    std::string sha256_hex_;
+    // ===== DAY 29 ADDED END =====
 };

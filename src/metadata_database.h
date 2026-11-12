@@ -70,7 +70,8 @@ public:
         int version = 0;
         if (!read_integer("PRAGMA user_version;", "read schema version", version))
             return false;
-        if (version != 0 && version != 1)
+        // ===== DAY 29 MODIFIED BEGIN 支持v1到v2的事务性摘要字段迁移 =====
+        if (version < 0 || version > 2)
         {
             const std::string detail = "unsupported schema version " +
                 std::to_string(version);
@@ -78,27 +79,47 @@ public:
             return false;
         }
 
-        static constexpr const char* schema = R"SQL(
+        static constexpr const char* create_version_2 = R"SQL(
 BEGIN IMMEDIATE;
 CREATE TABLE IF NOT EXISTS schema_info (
     singleton INTEGER NOT NULL PRIMARY KEY CHECK (singleton = 1),
-    version INTEGER NOT NULL CHECK (version = 1)
+    version INTEGER NOT NULL CHECK (version = 2)
 );
-INSERT OR IGNORE INTO schema_info(singleton, version) VALUES(1, 1);
+INSERT OR IGNORE INTO schema_info(singleton, version) VALUES(1, 2);
 CREATE TABLE IF NOT EXISTS files (
     id TEXT NOT NULL PRIMARY KEY,
     name TEXT NOT NULL CHECK (length(CAST(name AS BLOB)) BETWEEN 1 AND 255),
     size INTEGER NOT NULL CHECK (size >= 0),
     state TEXT NOT NULL CHECK (state IN ('publishing', 'ready', 'deleting')),
-    created_at INTEGER NOT NULL CHECK (created_at >= 0)
+    created_at INTEGER NOT NULL CHECK (created_at >= 0),
+    sha256 TEXT CHECK (sha256 IS NULL OR
+        (length(sha256) = 64 AND sha256 NOT GLOB '*[^0-9a-f]*'))
 );
 CREATE INDEX IF NOT EXISTS files_state_created_index
     ON files(state, created_at, id);
-PRAGMA user_version = 1;
+PRAGMA user_version = 2;
 COMMIT;
 )SQL";
 
-        if (!execute(schema, "initialize metadata schema"))
+        static constexpr const char* migrate_version_1_to_2 = R"SQL(
+BEGIN IMMEDIATE;
+ALTER TABLE files ADD COLUMN sha256 TEXT CHECK (sha256 IS NULL OR
+    (length(sha256) = 64 AND sha256 NOT GLOB '*[^0-9a-f]*'));
+DROP TABLE schema_info;
+CREATE TABLE schema_info (
+    singleton INTEGER NOT NULL PRIMARY KEY CHECK (singleton = 1),
+    version INTEGER NOT NULL CHECK (version = 2)
+);
+INSERT INTO schema_info(singleton, version) VALUES(1, 2);
+PRAGMA user_version = 2;
+COMMIT;
+)SQL";
+
+        const char* schema = version == 0 ? create_version_2
+            : (version == 1 ? migrate_version_1_to_2 : nullptr);
+        if (schema != nullptr && !execute(schema, version == 0
+                ? "initialize metadata schema version 2"
+                : "migrate metadata schema from version 1 to 2"))
         {
             sqlite3_exec(database_, "ROLLBACK;", nullptr, nullptr, nullptr);
             return false;
@@ -109,12 +130,13 @@ COMMIT;
                 "SELECT version FROM schema_info WHERE singleton = 1;",
                 "verify schema version", stored_version))
             return false;
-        if (stored_version != 1)
+        if (stored_version != 2)
         {
             remember_error("verify schema version", SQLITE_ERROR,
-                           "schema_info does not contain version 1");
+                           "schema_info does not contain version 2");
             return false;
         }
+        // ===== DAY 29 MODIFIED END =====
 
         clear_error();
         return true;

@@ -1,6 +1,25 @@
 # NetDisk 本地参考工程
 
-当前学习单元 第27单元 deleting状态与删除恢复 本地参考已更新 Linux验证待反馈
+当前学习单元 第29单元 OpenSSL EVP流式SHA256与schema v2迁移 本地参考已更新 Linux验证待反馈
+
+第29单元在每次临时文件write成功后只摘要实际写入的字节 完整接收并关闭文件后完成SHA256 新上传返回X-File-Sha256并与publishing元数据一起持久化
+SQLite schema从v1事务性迁移到v2 新增可空sha256列 旧记录保留NULL而不伪造摘要 新上传保存64位小写十六进制值
+新增sha256_tests覆盖标准向量 分片不变性 schema迁移和摘要持久化 新集成测试证明三段正文已分别落盘后最终摘要仍与客户端一致并在重启后保留
+首次使用在Debian Ubuntu安装libssl-dev 同步src/sha256_hasher.h及本单元全部修改文件后重新运行CMake配置
+复用build构建后只运行 ctest --test-dir build -R '^sha256_integration_tests$' -V 应通过一项并输出PASS: SHA256 integration finished 4 groups
+本机Windows完成SHA256相关C++语法检查 SQLite迁移及七项元数据回归通过 全部16个Python测试脚本语法通过 Linux OpenSSL构建与真实服务集成待反馈
+
+以下为第28单元及更早的历史说明 不要求每日重跑
+
+第28单元在publishing和deleting恢复完成后 监听端口前分页读取全部ready元数据并遍历data objects正式目录
+启动日志报告非法元数据ID 缺失对象 大小不符 非普通ready路径 孤立普通文件和未知非普通条目 六类数据异常不会被自动删除或修复 服务继续监听且健康对象仍可用
+SQLite查询或目录遍历失败会终止启动 防止输出不完整审计结果 未知目录项写日志前进行百分号编码
+新增storage_audit_tests覆盖110条ready记录跨页 六类分类 重复审计与数据不变性 新集成测试覆盖真实服务带异常启动 健康下载和第二次启动仍保留证据
+同步src/storage_audit.h src/main.cpp tests/day28_storage_audit.cpp tests/day28_storage_audit.py与CMakeLists.txt
+复用build构建后只运行 ctest --test-dir build -R '^storage_audit_integration_tests$' -V 应通过一项并输出PASS: storage audit integration finished, 2 groups
+本机Windows g++严格编译运行storage_audit_tests和deletion_recovery_tests通过 全部15个Python测试脚本语法通过 Linux生产服务审计待反馈
+
+以下为第27单元及更早的历史说明 不要求每日重跑
 
 第27单元DELETE先以SQLite事务把ready切换为deleting 再删除正式对象 最后以第二个事务删除deleting元数据
 列表 详情 下载与重复DELETE只读取ready 因此删除意图提交后新请求立即看到404 中断后服务在监听前继续完成删除
@@ -120,14 +139,14 @@ GET与HEAD /api/files/{id}/content复用ID校验 只发送普通文件 GET使用
 程序监听 127.0.0.1:8080 串行处理GET与HEAD /health和临时POST /echo 每连接只处理一次请求再关闭
 health只接受零长度正文 echo原样返回定长正文 请求上限仍64KiB
 POST /dev/upload将原始正文分段写临时文件并在本次处理作用域退出时清理 上传正文不进入parser.body
-POST /api/files使用同样的分段写入 完整接收且关闭成功后通过link发布到data/objects 返回201 X-File-Id及固定JSON正文created
+POST /api/files使用同样的分段写入并通过OpenSSL EVP增量计算SHA256 完整接收且关闭成功后通过link发布到data/objects 返回201 X-File-Id X-File-Sha256及固定JSON正文created
 临时目录与对象目录必须在支持硬链接的同一文件系统 目标已有文件时拒绝覆盖 正式对象在响应后保留 当前已有下载 仍无原始名称元数据
 无Content-Length时正文长度为零 拒绝重复长度 逗号列表 非十进制 溢出 超限 Transfer-Encoding与Expect
 Host要求单个非空 仍无完整Host语法校验 无超时 无并发
 格式错误400 未知路径404 已知路径方法不允许405并带Allow 正文超限413 Expect不支持417 传输编码与未实现方法501
 错误使用固定JSON正文 HEAD只发送响应头 路径按问号分开查询部分 当前不解释查询参数 不做解码或归一化
 
-教程在对话完整发送 本地 docs/lessons/day01.md 至 day25.md 用于助手保留上下文 固定复盘日取消 每日仅验证核心功能
+教程在对话完整发送 本地 docs/lessons/day01.md 至 day29.md 用于助手保留上下文 固定复盘日取消 每日仅验证核心功能
 
 在 Linux 工程目录 `~/projects/netdisk` 执行
 
