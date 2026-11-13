@@ -24,7 +24,6 @@ inline bool match_file_content(std::string_view target, std::string_view& id)
     return true;
 }
 
-// ===== DAY 25 MODIFIED BEGIN 下载前要求元数据已经提交为ready =====
 inline bool send_file_content(int client_fd, const RequestParser& request,
                               std::string_view id, FileMetadataStore& metadata_store)
 {
@@ -92,7 +91,13 @@ inline bool send_file_content(int client_fd, const RequestParser& request,
         return send_error(500);
     }
     std::string header;
-    if (!make_download_header(id, remaining, header)) return send_error(500);
+    // ===== DAY 30 MODIFIED BEGIN 没有持久摘要时拒绝生成无版本识别的下载响应 =====
+    if (!make_download_header(id, remaining, metadata.sha256, header))
+    {
+        std::cerr << "download metadata has no canonical SHA256\n";
+        return send_error(500);
+    }
+    // ===== DAY 30 MODIFIED END =====
     if (!send_all(client_fd, header.data(), header.size())) return false;
     if (head_only) return true;
 
@@ -119,4 +124,3 @@ inline bool send_file_content(int client_fd, const RequestParser& request,
     }
     return true;
 }
-// ===== DAY 25 MODIFIED END =====

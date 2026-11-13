@@ -11,10 +11,8 @@ target_link_libraries(netdisk PRIVATE nlohmann_json::nlohmann_json)
 find_package(SQLite3 REQUIRED)
 target_link_libraries(netdisk PRIVATE SQLite::SQLite3)
 
-# ===== DAY 29 ADDED BEGIN 引入OpenSSL EVP摘要实现 =====
 find_package(OpenSSL 1.1.1 REQUIRED COMPONENTS Crypto)
 target_link_libraries(netdisk PRIVATE OpenSSL::Crypto)
-# ===== DAY 29 ADDED END =====
 
 include(CTest)
 if(BUILD_TESTING)
@@ -45,17 +43,13 @@ if(BUILD_TESTING)
 
     add_executable(stream_upload_tests tests/day12_stream_upload.cpp)
     target_include_directories(stream_upload_tests PRIVATE src)
-    # ===== DAY 29 MODIFIED BEGIN 临时上传测试链接摘要实现 =====
     target_link_libraries(stream_upload_tests PRIVATE OpenSSL::Crypto)
-    # ===== DAY 29 MODIFIED END =====
     list(APPEND NETDISK_TARGETS stream_upload_tests)
     add_test(NAME stream_upload_tests COMMAND stream_upload_tests)
 
     add_executable(publish_tests tests/day13_publish.cpp)
     target_include_directories(publish_tests PRIVATE src)
-    # ===== DAY 29 MODIFIED BEGIN 发布测试链接摘要实现 =====
     target_link_libraries(publish_tests PRIVATE OpenSSL::Crypto)
-    # ===== DAY 29 MODIFIED END =====
     list(APPEND NETDISK_TARGETS publish_tests)
     add_test(NAME publish_tests COMMAND publish_tests)
 
@@ -254,7 +248,6 @@ if(BUILD_TESTING)
         SKIP_RETURN_CODE 77
     )
 
-    # ===== DAY 29 ADDED BEGIN 注册SHA256与schema迁移测试 =====
     add_executable(sha256_tests tests/day29_sha256.cpp)
     target_include_directories(sha256_tests PRIVATE src)
     target_link_libraries(sha256_tests PRIVATE OpenSSL::Crypto SQLite::SQLite3)
@@ -271,7 +264,25 @@ if(BUILD_TESTING)
         RUN_SERIAL TRUE
         SKIP_RETURN_CODE 77
     )
-    # ===== DAY 29 ADDED END =====
+
+    # ===== DAY 30 ADDED BEGIN 注册旧对象摘要回填与ETag测试 =====
+    add_executable(digest_backfill_tests tests/day30_digest_backfill.cpp)
+    target_include_directories(digest_backfill_tests PRIVATE src)
+    target_link_libraries(digest_backfill_tests PRIVATE OpenSSL::Crypto SQLite::SQLite3)
+    list(APPEND NETDISK_TARGETS digest_backfill_tests)
+    add_test(NAME digest_backfill_tests COMMAND digest_backfill_tests)
+
+    add_test(NAME digest_backfill_integration_tests
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/day30_digest_backfill.py"
+            "$<TARGET_FILE:netdisk>"
+    )
+    set_tests_properties(digest_backfill_integration_tests PROPERTIES
+        TIMEOUT 30
+        RUN_SERIAL TRUE
+        SKIP_RETURN_CODE 77
+    )
+    # ===== DAY 30 ADDED END =====
 endif()
 
 foreach(target IN LISTS NETDISK_TARGETS)

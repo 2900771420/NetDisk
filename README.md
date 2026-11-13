@@ -1,6 +1,15 @@
 # NetDisk 本地参考工程
 
-当前学习单元 第29单元 OpenSSL EVP流式SHA256与schema v2迁移 本地参考已更新 Linux验证待反馈
+当前学习单元 第30单元 旧对象SHA256回填与下载强ETag 本地参考已更新 Linux验证待反馈
+
+第30单元在恢复和只读审计之后 监听端口之前分页遍历全部ready记录 只对sha256为NULL的旧对象执行流式摘要回填
+回填使用O_NOFOLLOW和fstat确认普通文件与大小 读取前后对象变化时保留NULL SQLite更新同时约束id state size和sha256 IS NULL 重复启动不重算已有摘要
+成功GET与HEAD下载使用持久化SHA256生成形如ETag: "<sha256>"的强验证器 改名不改变内容ETag 缺少规范摘要时拒绝发送无版本识别的成功下载
+新增digest_backfill_tests与digest_backfill_integration_tests 覆盖健康旧对象回填 异常对象保留NULL 既有摘要不覆盖 重启幂等 GET HEAD头一致以及改名后ETag不变
+复用build重新配置和构建后只运行 ctest --test-dir build -R '^digest_backfill_integration_tests$' -V 应通过一项并输出PASS: digest backfill integration finished 2 groups
+本机Windows严格编译运行下载ETag头测试通过 使用临时声明完成新C++代码语法检查 全部17个Python测试脚本ast语法通过 Linux OpenSSL SQLite Socket端到端执行待反馈
+
+以下为第29单元及更早的历史说明 不要求每日重跑
 
 第29单元在每次临时文件write成功后只摘要实际写入的字节 完整接收并关闭文件后完成SHA256 新上传返回X-File-Sha256并与publishing元数据一起持久化
 SQLite schema从v1事务性迁移到v2 新增可空sha256列 旧记录保留NULL而不伪造摘要 新上传保存64位小写十六进制值
@@ -146,25 +155,25 @@ Host要求单个非空 仍无完整Host语法校验 无超时 无并发
 格式错误400 未知路径404 已知路径方法不允许405并带Allow 正文超限413 Expect不支持417 传输编码与未实现方法501
 错误使用固定JSON正文 HEAD只发送响应头 路径按问号分开查询部分 当前不解释查询参数 不做解码或归一化
 
-教程在对话完整发送 本地 docs/lessons/day01.md 至 day29.md 用于助手保留上下文 固定复盘日取消 每日仅验证核心功能
+教程在对话完整发送 本地 docs/lessons/day01.md 至 day30.md 用于助手保留上下文 固定复盘日取消 每日仅验证核心功能
 
 在 Linux 工程目录 `~/projects/netdisk` 执行
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON
 cmake --build build -j2
-ctest --test-dir build -R '^upload_integration_tests$' -V
+ctest --test-dir build -R '^digest_backfill_integration_tests$' -V
 ```
 
 若此前一直使用build-debug 则复用build-debug 将上述build统一替换 不另建目录
 
 本次测试需要Python3.8或以上 只使用标准库 CMake负责查找解释器
 运行前让8080空闲 若已有手动启动的服务器 在其原终端停止 脚本会启动自己的服务且自动结束
-CTest应实际运行upload_integration_tests一项并通过 最后输出PASS: upload integration finished, 6 checks, 4 published files Linux不应显示SKIP
-覆盖空文件 UTF8文本 64KiB二进制 分段接收时不提前发布 提前EOF清理以及之后health成功
+本次CTest应实际运行digest_backfill_integration_tests一项并通过 最后输出PASS: digest backfill integration finished 2 groups Linux不应显示SKIP
+覆盖健康旧对象回填 已有摘要保留 缺失对象保留NULL 重启幂等 GET HEAD强ETag一致与改名不变
 测试使用独立临时目录 不使用工程data 结束时停止自己启动的进程再清理临时目录 不需要额外手动curl
-本机Windows已检查脚本语法 响应读取辅助逻辑和退出77跳过行为 用户已明确反馈Linux上传端到端测试百分百通过
+本机Windows已检查脚本语法 新C++语法 下载头精确格式与退出77跳过行为 Linux新集成测试待用户执行
 后续Python测试脚本由助手维护 对话只给命令 范围与成功条件 不要求阅读实现 C++功能源码与必要CMake仍完整讲解
-没有fsync与启动恢复 不承诺断电持久化 已发布后响应丢失不删除对象 未发布的临时文件在正常析构时清理
+已实现publishing与deleting启动恢复 但没有fsync且不承诺断电零丢失 回填依赖单服务进程和就绪对象不再被带外修改的不变性约束
 
 实际进度见工作区根目录的 `LEARNING_PROGRESS.md` 第14单元集成验证已按用户反馈记录通过

@@ -16,9 +16,7 @@ struct FileMetadata
     std::string name;
     std::uint64_t size = 0;
     std::int64_t created_at = 0;
-    // ===== DAY 29 ADDED BEGIN 空字符串表示旧数据尚无摘要 =====
     std::string sha256;
-    // ===== DAY 29 ADDED END =====
 };
 
 struct FilePageRequest
@@ -60,6 +58,9 @@ public:
         sqlite3_finalize(list_);
         sqlite3_finalize(find_);
         sqlite3_finalize(rename_);
+        // ===== DAY 30 ADDED BEGIN 释放摘要回填预编译语句 =====
+        sqlite3_finalize(set_digest_);
+        // ===== DAY 30 ADDED END =====
     }
 
     bool prepare()
@@ -77,7 +78,6 @@ public:
             return false;
         }
 
-        // ===== DAY 29 MODIFIED BEGIN 所有元数据读写携带可空SHA256 =====
         if (!prepare_statement(create_,
                 "INSERT INTO files(id, name, size, state, created_at, sha256) "
                 "VALUES(?1, ?2, ?3, 'publishing', ?4, ?5);",
@@ -114,9 +114,14 @@ public:
                 "WHERE id = ?1 AND state = 'ready';", "prepare find file") ||
             !prepare_statement(rename_,
                 "UPDATE files SET name = ?1 WHERE id = ?2 AND state = 'ready';",
-                "prepare rename file"))
+                "prepare rename file") ||
+            // ===== DAY 30 ADDED BEGIN 只为未知摘要的ready记录回填 =====
+            !prepare_statement(set_digest_,
+                "UPDATE files SET sha256 = ?1 "
+                "WHERE id = ?2 AND state = 'ready' AND size = ?3 AND sha256 IS NULL;",
+                "prepare digest backfill"))
+            // ===== DAY 30 ADDED END =====
             return false;
-        // ===== DAY 29 MODIFIED END =====
 
         prepared_ = true;
         clear_error();
@@ -129,7 +134,6 @@ public:
     {
         if (!start_statement(create_, "create publishing metadata"))
             return MetadataResult::Error;
-        // ===== DAY 29 MODIFIED BEGIN 校验并持久化上传阶段已经完成的摘要 =====
         if (size > static_cast<std::uint64_t>(std::numeric_limits<sqlite3_int64>::max()) ||
             created_at < 0 || (!sha256.empty() && !valid_sha256_hex(sha256)))
         {
@@ -174,7 +178,6 @@ public:
             return MetadataResult::Error;
         }
         clear_error();
-        // ===== DAY 29 MODIFIED END =====
         return MetadataResult::Ok;
     }
 
@@ -372,6 +375,39 @@ public:
             ? MetadataResult::NotFound : MetadataResult::Ok;
     }
 
+    // ===== DAY 30 ADDED BEGIN 使用条件UPDATE幂等回填旧对象摘要 =====
+    MetadataResult set_sha256_if_missing(std::string_view id, std::uint64_t size,
+                                         std::string_view sha256)
+    {
+        if (!start_statement(set_digest_, "backfill file digest"))
+            return MetadataResult::Error;
+        if (size > static_cast<std::uint64_t>(std::numeric_limits<sqlite3_int64>::max()) ||
+            !valid_sha256_hex(sha256))
+        {
+            remember_error("backfill file digest", SQLITE_CONSTRAINT,
+                           "size or SHA256 is invalid");
+            return MetadataResult::Error;
+        }
+
+        StatementReset reset(set_digest_);
+        if (!bind_text(set_digest_, 1, sha256, "bind backfill SHA256") ||
+            !bind_text(set_digest_, 2, id, "bind backfill file id") ||
+            !bind_integer(set_digest_, 3, static_cast<sqlite3_int64>(size),
+                          "bind backfill file size"))
+            return MetadataResult::Error;
+
+        const int result = sqlite3_step(set_digest_);
+        if (result != SQLITE_DONE)
+        {
+            remember_error("backfill file digest", result, sqlite3_errmsg(database_));
+            return MetadataResult::Error;
+        }
+        const int changed = sqlite3_changes(database_);
+        clear_error();
+        return changed == 1 ? MetadataResult::Ok : MetadataResult::NotFound;
+    }
+    // ===== DAY 30 ADDED END =====
+
     int error_code() const noexcept
     {
         return error_code_;
@@ -406,7 +442,6 @@ private:
         return code & 0xff;
     }
 
-    // ===== DAY 29 ADDED BEGIN 验证数据库摘要的规范编码 =====
     static bool valid_sha256_hex(std::string_view value) noexcept
     {
         if (value.size() != 64) return false;
@@ -414,7 +449,6 @@ private:
             if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'))) return false;
         return true;
     }
-    // ===== DAY 29 ADDED END =====
 
     bool prepare_statement(sqlite3_stmt*& statement, const char* sql,
                            const char* operation)
@@ -454,7 +488,6 @@ private:
         return false;
     }
 
-    // ===== DAY 29 ADDED BEGIN 旧记录允许NULL摘要 新上传绑定规范摘要 =====
     bool bind_nullable_text(sqlite3_stmt* statement, int index, std::string_view value,
                             const char* operation)
     {
@@ -464,7 +497,6 @@ private:
         remember_error(operation, result, sqlite3_errmsg(database_));
         return false;
     }
-    // ===== DAY 29 ADDED END =====
 
     bool bind_integer(sqlite3_stmt* statement, int index, sqlite3_int64 value,
                       const char* operation)
@@ -556,7 +588,6 @@ private:
     bool read_row(sqlite3_stmt* statement, FileMetadata& output,
                   const char* operation)
     {
-        // ===== DAY 29 MODIFIED BEGIN 读取并验证可空摘要列 =====
         const int digest_type = sqlite3_column_type(statement, 4);
         if (sqlite3_column_type(statement, 0) != SQLITE_TEXT ||
             sqlite3_column_type(statement, 1) != SQLITE_TEXT ||
@@ -596,7 +627,6 @@ private:
             output.sha256.clear();
         else
             output.sha256.assign(digest_view.data(), digest_view.size());
-        // ===== DAY 29 MODIFIED END =====
         return true;
     }
 
@@ -625,6 +655,9 @@ private:
     sqlite3_stmt* list_ = nullptr;
     sqlite3_stmt* find_ = nullptr;
     sqlite3_stmt* rename_ = nullptr;
+    // ===== DAY 30 ADDED BEGIN 回填语句的生命周期与元数据仓库一致 =====
+    sqlite3_stmt* set_digest_ = nullptr;
+    // ===== DAY 30 ADDED END =====
     bool prepared_ = false;
     int error_code_ = SQLITE_OK;
     std::string error_message_;

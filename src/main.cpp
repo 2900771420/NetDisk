@@ -9,6 +9,9 @@
 #include "publishing_recovery.h"
 #include "deletion_recovery.h"
 #include "storage_audit.h"
+// ===== DAY 30 ADDED BEGIN 启动监听前回填旧对象摘要 =====
+#include "digest_backfill.h"
+// ===== DAY 30 ADDED END =====
 
 #include <algorithm>
 #include <arpa/inet.h>
@@ -124,13 +127,11 @@ bool handle_client(int client_fd, FileMetadataStore& metadata)
             const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(
                 std::chrono::system_clock::now().time_since_epoch()).count();
             const std::string default_name = upload.id() + ".bin";
-            // ===== DAY 29 MODIFIED BEGIN 摘要与publishing元数据一起提交 =====
             const auto result = seconds < 0
                 ? MetadataResult::Error
                 : metadata.create_publishing(upload.id(), default_name, parser.body_size(),
                                              static_cast<std::int64_t>(seconds),
                                              upload.sha256());
-            // ===== DAY 29 MODIFIED END =====
             if (result != MetadataResult::Ok)
             {
                 std::cerr << "create publishing metadata failed: "
@@ -162,10 +163,8 @@ bool handle_client(int client_fd, FileMetadataStore& metadata)
             std::cout << "published ready id=" << upload.id() << '\n';
         }
     }
-    // ===== DAY 29 MODIFIED BEGIN 上传成功同时返回文件ID和SHA256 =====
     return send_response(client_fd, route_request(parser, upload.id(), upload.sha256()),
                          line.method == "HEAD");
-    // ===== DAY 29 MODIFIED END =====
 }
 
 int main()
@@ -179,9 +178,7 @@ int main()
         std::cerr << "metadata database failed: " << metadata.error_message() << '\n';
         return 1;
     }
-    // ===== DAY 29 MODIFIED BEGIN 输出迁移后的schema版本 =====
     std::cout << "metadata database ready path=data/netdisk.db schema=2\n";
-    // ===== DAY 29 MODIFIED END =====
 
     FileMetadataStore file_metadata(metadata.get());
     if (!file_metadata.prepare())
@@ -239,6 +236,32 @@ int main()
             std::cerr << " expected_size=" << finding.expected_size;
         std::cerr << '\n';
     }
+
+    // ===== DAY 30 ADDED BEGIN 只回填健康旧对象并记录所有跳过原因 =====
+    DigestBackfiller digest_backfiller(file_metadata);
+    DigestBackfillReport digest_report;
+    if (!digest_backfiller.run(digest_report))
+    {
+        std::cerr << "digest backfill failed: "
+                  << digest_backfiller.error_message() << '\n';
+        return 1;
+    }
+    std::cout << "digest backfill ready=" << digest_report.ready_records
+              << " already_hashed=" << digest_report.already_hashed
+              << " backfilled=" << digest_report.backfilled
+              << " skipped=" << digest_report.skipped << '\n';
+    for (const DigestBackfillFinding& finding : digest_report.findings)
+    {
+        std::cerr << "digest backfill finding kind="
+                  << digest_backfill_kind_name(finding.kind)
+                  << " id=" << escape_storage_audit_value(finding.id)
+                  << " expected_size=" << finding.expected_size;
+        if (finding.kind == DigestBackfillFindingKind::SizeMismatch ||
+            finding.kind == DigestBackfillFindingKind::ChangedDuringRead)
+            std::cerr << " actual_size=" << finding.actual_size;
+        std::cerr << '\n';
+    }
+    // ===== DAY 30 ADDED END =====
 
     const int raw_fd = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (raw_fd == -1)
