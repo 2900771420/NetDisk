@@ -1,6 +1,6 @@
 # NetDisk HTTP API v0.1
 
-本文件记录第30单元当前功能基线 不表示完整实现HTTP/1.1 不表示公网安全评估通过
+本文件记录第35单元当前功能基线 不表示完整实现HTTP/1.1 不表示公网安全评估通过
 
 服务地址 `http://127.0.0.1:8080` 每个连接只处理一个请求 响应后关闭连接
 
@@ -14,7 +14,7 @@
 | GET HEAD | `/api/files/{id}` | 200 | 返回`id name size`详情 |
 | PATCH | `/api/files/{id}` | 200 | 正文必须为仅含字符串`name`的JSON |
 | DELETE | `/api/files/{id}` | 204 | 删除正式对象 无正文和Content-Length |
-| GET HEAD | `/api/files/{id}/content` | 200 | GET流式下载 HEAD只返回相同头部 |
+| GET HEAD | `/api/files/{id}/content` | 200 206 416 | 支持单字节范围 GET流式下载 HEAD只返回相同头部 |
 
 ## 上传
 
@@ -98,9 +98,41 @@
 
 GET先查询`ready`元数据 再以16KiB缓冲区读取和发送 未登记对象和`publishing`对象即使已存在于磁盘也返回404 文件实际大小与元数据大小不一致返回500 可下载记录缺少规范SHA256时返回500
 
-成功响应增加`ETag: "<64位小写SHA256>"` 没有`W/`前缀 因此是按字节内容定义的强ETag 显示名称修改不改变ETag HEAD发送与GET相同的Content-Length Content-Type Content-Disposition和ETag但不发送正文
+成功响应增加`ETag: "<64位小写SHA256>"` 没有`W/`前缀 因此是按字节内容定义的强ETag 显示名称修改不改变ETag 完整与范围响应都增加`Accept-Ranges: bytes`
 
-当前不解析`If-None-Match` 不支持Range If-Range或下载续传 ETag暂时只作为客户端识别内容版本的响应元数据
+请求头`Range`的bytes范围单位按ASCII大小写不敏感处理 支持`bytes=start-end` `bytes=start-`和`bytes=-suffix`三种单范围形式 数字使用uint64边界检查 显式结束超过文件末尾时截到末尾 后缀长度超过文件大小时选择整个文件
+
+合法可满足范围返回206 `Content-Range: bytes start-end/完整大小`且`Content-Length`只描述选中范围 GET先定位到start再流式发送length字节 HEAD返回相同状态和头部但不发送正文
+
+单范围起点不小于文件大小 空文件范围和零长度后缀返回416 响应携带`Content-Range: bytes */完整大小` 规范强ETag和固定JSON错误正文 HEAD仍只返回头部 Range语法错误或重复Range字段返回400
+
+合法多范围和未知范围单位暂不实现并忽略Range 返回完整200而不是误用416
+
+单个`If-Range`只支持强ETag形式 服务把它与当前持久SHA256生成的`"<sha256>"`逐字节比较 完全匹配时才解析和应用Range 因此可满足范围返回206 无法满足返回416 语法错误返回400
+
+If-Range为不同强ETag 弱ETag HTTP日期 裸摘要或其他不支持的形式时视为不匹配 服务忽略Range并返回当前完整内容200 不返回Content-Range 客户端必须只在206时追加正文 收到200时覆盖本地旧文件
+
+Range存在时重复If-Range字段返回400 没有Range时If-Range没有条件作用
+
+当前不解析`If-None-Match` 不支持If-Range日期比较 不提供浏览器暂停界面
+
+### 命令行断点下载客户端
+
+`netdisk_download [--host IPV4] [--port PORT] [--timeout-ms MILLISECONDS] FILE_ID OUTPUT_PATH`默认连接`127.0.0.1:8080` 也可选择其他数字IPv4地址和1至65535端口 客户端把未完成正文保存在同目录`OUTPUT_PATH.netdisk-part`并把强ETag保存在`OUTPUT_PATH.netdisk-etag` 非空普通临时产物与合法状态同时存在时 客户端把临时产物长度作为Range起点并把状态中的强ETag作为If-Range
+
+`--timeout-ms`默认5000 可配置范围1至600000 同一数值限制非阻塞connect 请求发送以及响应头和正文接收的连续无进展时间 每当真实发送或接收到字节后重新计时 它不是整个大文件下载的总耗时上限
+
+客户端只接受带单个Content-Length和规范强ETag的响应 拒绝Transfer-Encoding 重复长度 重复ETag 非法或不一致的Content-Range以及非200 206 416状态 不把错误正文写入目标文件
+
+206必须满足响应ETag等于状态ETag Content-Range起点等于本地长度 结束位置等于完整文件末尾且范围长度等于Content-Length 才以O_APPEND追加临时产物 200必须没有Content-Range 客户端以O_TRUNC重建临时产物并在写正文前保存新ETag 最终路径不会在这一阶段被截断
+
+临时产物长度已经等于416的`bytes */完整大小`且响应ETag仍匹配时 客户端不写错误正文而直接重试完成校验与发布 已发布最终文件已经完整时则直接校验最终文件 完整接收或416完成路径都流式计算完整文件SHA256并与ETag比较 校验失败删除状态文件使下次运行不再发送Range
+
+网络在正文完成前断开或超时时客户端返回非零但只改变临时产物并保留ETag 旧最终文件保持不变 下次运行从临时产物长度继续 完整SHA256匹配后使用同目录POSIX `rename`原子替换最终路径 因此同一文件系统中的路径观察者只会看到旧版本或完整新版本 不会看到下载中的前缀
+
+状态文件在成功后仍保留 用于重复执行时通过416识别已完成文件 若上次已完成校验但`rename`失败 完整临时产物也会保留 下一次可通过416重新校验并重试公开 第33至34单元遗留在最终路径中的可续传前缀会先复制到临时产物后再追加 完成后同样原子替换
+
+`rename`的名称切换原子性不等于断电持久性 当前未对文件或父目录执行`fsync` 路径在摘要校验和替换之间被其他本地进程恶意修改的竞争也不在当前威胁模型内 客户端仍不支持DNS主机名 IPv6 TLS或并行分块
 
 ## 删除
 
@@ -118,6 +150,7 @@ DELETE先确认正式对象是普通文件且大小匹配 第一个SQLite事务�
 | 404 | 路由或合法ID对应文件不存在 |
 | 405 | 方法已实现但不允许用于该资源 响应包含Allow |
 | 413 | 请求正文超过65536字节 |
+| 416 | 单字节范围语法有效但当前表示无法满足 |
 | 417 | 不支持Expect |
 | 500 | 文件系统或内部处理失败 |
 | 501 | 方法或Transfer-Encoding未实现 |
@@ -127,8 +160,8 @@ DELETE先确认正式对象是普通文件且大小匹配 第一个SQLite事务�
 ## 第一版限制
 
 - 串行阻塞 一次只处理一个客户端
-- 无读写超时 连接数限制和优雅退出
-- SQLite元数据 发布与删除状态事务 启动恢复 键集分页 只读一致性审计 新上传SHA256 旧对象回填与下载强ETag已实现 仍无定期内容重算比对 条件请求和HTTP创建时间字段
+- 服务端无读写超时 连接数限制和优雅退出 命令行下载客户端已有有限无进展等待
+- SQLite元数据 发布与删除状态事务 启动恢复 键集分页 只读一致性审计 新上传SHA256 旧对象回填 下载强ETag 单Range与强ETag If-Range已实现 仍无定期内容重算比对 其他条件请求和HTTP创建时间字段
 - 无用户 权限 文件夹 分享 配额 回收站和版本历史
-- 无Range 上传续传 并行上传和秒传
+- 无多Range与If-Range日期判断 上传续传 并行上传和秒传
 - 只监听回环地址 没有TLS 不用于公网

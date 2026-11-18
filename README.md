@@ -1,6 +1,48 @@
 # NetDisk 本地参考工程
 
-当前学习单元 第30单元 旧对象SHA256回填与下载强ETag 本地参考已更新 Linux验证待反馈
+当前学习单元 第35单元 下载临时产物与完整校验后原子公开
+
+第35单元把`netdisk_download`的新正文统一写入同目录`OUTPUT_PATH.netdisk-part` 最终路径在下载和校验期间保持原有内容或保持不存在
+网络中断或超时后客户端保留临时前缀与`OUTPUT_PATH.netdisk-etag` 下次运行继续使用Range和If-Range 完整SHA256等于服务端强ETag后才用POSIX `rename`原子替换最终路径
+第34单元新增的`download_timeout_integration_tests`继续复用并扩展为验证旧最终文件不变 临时前缀恢复 完成后原子公开和临时名称消失 不新增测试文件或CTest 当前仍为22个C++测试 21个Python脚本和40个CTest
+
+以下为第34单元及更早的历史说明 不要求每日重跑
+
+第34单元为`netdisk_download`增加`--host IPV4` `--port PORT`和`--timeout-ms MILLISECONDS` 默认仍为`127.0.0.1:8080`与5000毫秒 不带新参数的第33单元命令保持兼容
+客户端Socket改为非阻塞 connect send recv均由poll和steady_clock限制连续无进展时间 收到字节就重置计时 因此限制的是停滞而不是整个文件总下载时长
+
+以下为第33A单元及更早的历史说明 不要求每日重跑
+
+第33A单元按api io crypto http metadata storage maintenance server client九种真实职责组织生产代码 不使用core common utils或misc兜底目录 每个模块的公开头位于include/netdisk/模块名 普通实现位于.cpp
+原请求行 请求头 请求体三个学习单元头合并为request接口 Range与If Range合并为range接口 发布恢复与删除恢复合并为recovery接口 SHA256格式和EVP实现合并为crypto接口 服务端响应与客户端下载响应头解析共同进入http响应接口
+九个静态库目标表达无环依赖 netdisk只组合server与maintenance netdisk_download只组合client 客户端链接闭包明确排除server storage metadata maintenance SQLite和JSON
+生产目标名netdisk与netdisk_download保持不变 22个C++测试和17个集成CTest名称保持不变 Python脚本内容与业务语义未修改
+最终九模块版已经在用户Linux虚拟机完成CMake配置和构建 CTest确认注册39项 resume_download_tests与resume_download_integration_tests两项核心测试均通过
+
+后续教程的固定架构契约记录在docs/architecture.md 根CMake在注册测试前调用cmake/NetdiskArchitecture.cmake 配置时校验九个生产目录 十一个生产目标 精确直接依赖 客户端传递闭包 公开头路径 教学单元式生产文件名和目录级include路径 第35单元Linux重新配置已实际输出NetDisk architecture guard passed
+
+第33A冻结的22个C++测试 20个Python脚本和39个CTest名称保持不变 第34单元以稳定工作流名新增1个Python脚本和1个CTest 当前总数为22个C++测试 21个Python脚本和40个CTest 后续测试规则记录在docs/testing.md
+
+以下为第33单元及更早的历史说明 不要求每日重跑
+
+第33单元新增netdisk_download命令行客户端 以目标文件旁的.netdisk-etag状态文件保存当前强ETag 非空本地前缀与合法状态同时存在时发送Range和If-Range
+客户端只有在206的ETag Content-Range Content-Length与本地偏移全部一致时追加 收到200时截断旧文件并保存新ETag后从头覆盖 收到匹配416且本地长度等于完整长度时直接进入校验
+下载结束后使用OpenSSL EVP流式计算整个本地文件SHA256并与响应ETag比较 校验失败删除状态文件使下次请求强制完整覆盖 网络提前断开则保留已确认前缀和ETag供下次继续
+新增resume_download_tests与resume_download_integration_tests 覆盖响应头严格解析 206追加 版本变化200覆盖 已完成416校验和最终摘要一致性
+复用build重新配置和构建后只运行 ctest --test-dir build -R '^resume_download_integration_tests$' -V 应通过一项并输出PASS: resume download integration finished 3 groups
+本机Windows严格编译运行纯C++响应决策测试通过 新Python脚本语法通过 Linux生产客户端与真实Socket集成待反馈
+
+第32单元新增if_range.h 只把与当前持久SHA256强ETag逐字节完全相同的引号实体标签视为匹配 弱ETag 日期形式 裸摘要和不同标签都不匹配
+请求同时携带单个Range和匹配If-Range时沿用第31单元语义返回206或416 匹配但Range语法错误仍返回400 不匹配时忽略整个Range并返回完整200 防止客户端把新版本片段拼到旧文件
+新增if_range_tests与if_range_integration_tests 覆盖强比较 GET与HEAD 206 不匹配200 以及匹配后的400 416和重复If-Range拒绝
+复用build重新配置和构建后只运行 ctest --test-dir build -R '^if_range_integration_tests$' -V 应通过一项并输出PASS: If-Range integration finished 3 groups
+本机Windows严格编译运行if_range_tests与range_tests通过 全部19个Python测试脚本ast语法通过 Linux生产服务条件范围下载待反馈
+
+第31单元新增byte_range.h 使用无符号64位安全解析bytes=start-end bytes=start-和bytes=-suffix三种形式 检查数字溢出 空文件 反向结束位置和越界起点
+合法单范围下载返回206 Content-Range与选中长度 GET只从起点发送指定字节 HEAD返回同样范围头但无正文 无法满足返回416并携带Content-Range: bytes */完整大小
+完整与范围响应都返回Accept-Ranges: bytes和原有强ETag 合法多范围与未知范围单位暂时忽略并回退完整200
+
+以下为第30单元及更早的历史说明 不要求每日重跑
 
 第30单元在恢复和只读审计之后 监听端口之前分页遍历全部ready记录 只对sha256为NULL的旧对象执行流式摘要回填
 回填使用O_NOFOLLOW和fstat确认普通文件与大小 读取前后对象变化时保留NULL SQLite更新同时约束id state size和sha256 IS NULL 重复启动不重算已有摘要
@@ -8,8 +50,6 @@
 新增digest_backfill_tests与digest_backfill_integration_tests 覆盖健康旧对象回填 异常对象保留NULL 既有摘要不覆盖 重启幂等 GET HEAD头一致以及改名后ETag不变
 复用build重新配置和构建后只运行 ctest --test-dir build -R '^digest_backfill_integration_tests$' -V 应通过一项并输出PASS: digest backfill integration finished 2 groups
 本机Windows严格编译运行下载ETag头测试通过 使用临时声明完成新C++代码语法检查 全部17个Python测试脚本ast语法通过 Linux OpenSSL SQLite Socket端到端执行待反馈
-
-以下为第29单元及更早的历史说明 不要求每日重跑
 
 第29单元在每次临时文件write成功后只摘要实际写入的字节 完整接收并关闭文件后完成SHA256 新上传返回X-File-Sha256并与publishing元数据一起持久化
 SQLite schema从v1事务性迁移到v2 新增可空sha256列 旧记录保留NULL而不伪造摘要 新上传保存64位小写十六进制值
@@ -149,30 +189,31 @@ GET与HEAD /api/files/{id}/content复用ID校验 只发送普通文件 GET使用
 health只接受零长度正文 echo原样返回定长正文 请求上限仍64KiB
 POST /dev/upload将原始正文分段写临时文件并在本次处理作用域退出时清理 上传正文不进入parser.body
 POST /api/files使用同样的分段写入并通过OpenSSL EVP增量计算SHA256 完整接收且关闭成功后通过link发布到data/objects 返回201 X-File-Id X-File-Sha256及固定JSON正文created
-临时目录与对象目录必须在支持硬链接的同一文件系统 目标已有文件时拒绝覆盖 正式对象在响应后保留 当前已有下载 仍无原始名称元数据
+临时目录与对象目录必须在支持硬链接的同一文件系统 目标已有文件时拒绝覆盖 正式对象在响应后保留 当前已有下载与单Range 仍无原始上传名称
 无Content-Length时正文长度为零 拒绝重复长度 逗号列表 非十进制 溢出 超限 Transfer-Encoding与Expect
 Host要求单个非空 仍无完整Host语法校验 无超时 无并发
 格式错误400 未知路径404 已知路径方法不允许405并带Allow 正文超限413 Expect不支持417 传输编码与未实现方法501
 错误使用固定JSON正文 HEAD只发送响应头 路径按问号分开查询部分 当前不解释查询参数 不做解码或归一化
 
-教程在对话完整发送 本地 docs/lessons/day01.md 至 day30.md 用于助手保留上下文 固定复盘日取消 每日仅验证核心功能
+教程在对话完整发送 本地 docs/lessons/day01.md 至 day34.md 用于助手保留上下文 固定复盘日取消 每日仅验证核心功能
 
-在 Linux 工程目录 `~/projects/netdisk` 执行
+第35单元在 Linux 工程目录 `~/projects/netdisk` 执行
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON
 cmake --build build -j2
-ctest --test-dir build -R '^digest_backfill_integration_tests$' -V
+ctest --test-dir build -N
+ctest --test-dir build -R '^download_timeout_integration_tests$' -V
 ```
 
 若此前一直使用build-debug 则复用build-debug 将上述build统一替换 不另建目录
 
 本次测试需要Python3.8或以上 只使用标准库 CMake负责查找解释器
-运行前让8080空闲 若已有手动启动的服务器 在其原终端停止 脚本会启动自己的服务且自动结束
-本次CTest应实际运行digest_backfill_integration_tests一项并通过 最后输出PASS: digest backfill integration finished 2 groups Linux不应显示SKIP
-覆盖健康旧对象回填 已有摘要保留 缺失对象保留NULL 重启幂等 GET HEAD强ETag一致与改名不变
-测试使用独立临时目录 不使用工程data 结束时停止自己启动的进程再清理临时目录 不需要额外手动curl
-本机Windows已检查脚本语法 新C++语法 下载头精确格式与退出77跳过行为 Linux新集成测试待用户执行
+该测试自己创建两个临时回环端口 不需要8080空闲 不启动生产服务端
+注册检查应输出Total Tests: 40 聚焦CTest应实际运行一项并通过 最后输出PASS: download publication integration finished 1 workflow Linux不应显示SKIP
+覆盖自定义Host和端口 旧最终文件保持不变 200部分正文后停滞超时 临时前缀与ETag保留 换用新临时端口后发送Range和If-Range 以206完成恢复 校验后原子替换最终文件并移除临时名称
+测试使用独立临时目录 不使用工程data 结束时关闭自己的Socket并清理目录 不需要额外手动curl
+本机Windows没有CMake和Linux发行版 新Python脚本编译检查通过 Windows GCC因缺少sys/socket.h不能编译POSIX下载会话 用户Linux已完成CMake配置 架构守卫和netdisk_download链接 首次聚焦测试因虚拟机仍使用第34单元Python脚本而失败 同步新脚本后的真实rename Socket集成结果待执行
 后续Python测试脚本由助手维护 对话只给命令 范围与成功条件 不要求阅读实现 C++功能源码与必要CMake仍完整讲解
 已实现publishing与deleting启动恢复 但没有fsync且不承诺断电零丢失 回填依赖单服务进程和就绪对象不再被带外修改的不变性约束
 
